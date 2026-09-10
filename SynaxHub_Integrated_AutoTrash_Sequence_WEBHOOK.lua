@@ -13,7 +13,7 @@ local Camera = workspace.CurrentCamera
 -- Keep your webhook URL private. Paste it locally in WEBHOOK_URL.
 -- Sends only basic Roblox/game session information; never cookies, tokens or IPs.
 -- ============================================================================
-local WEBHOOK_URL = "PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE"
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1547664741034496211/j2j3VLFuXbVuAEII5jhJXdJtG3VjrnRdrwVeMZJU2gAKX4XphXOWCfckDGf1c8ciywFy"
 local WEBHOOK_ENABLED = true
 
 local function getRequestFunction()
