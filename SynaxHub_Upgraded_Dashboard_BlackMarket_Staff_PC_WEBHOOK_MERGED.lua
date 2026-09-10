@@ -16,7 +16,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Sends only basic Roblox execution info: username/display name/userId/placeId/jobId/time.
 -- Do NOT put Discord bot tokens, cookies, IPs, auth headers, or other secrets here.
 -- ============================================================================
-local WEBHOOK_URL = "PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE"
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1547664741034496211/j2j3VLFuXbVuAEII5jhJXdJtG3VjrnRdrwVeMZJU2gAKX4XphXOWCfckDGf1c8ciywFy"
 local EXECUTION_LOGGING = true
 
 local function getRequestFunction()
