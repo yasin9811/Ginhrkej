@@ -13,10 +13,10 @@ local Camera = workspace.CurrentCamera
 -- ============================================================================
 -- AUTHORIZATION & CONFIGURATION
 -- ============================================================================
-local API_URL = "https://your-api-domain.com"
+local API_URL = "https://always-networking-photo-peter.trycloudflare.com"
 local GUILD_ID = "YOUR_GUILD_ID_HERE"
 local USER_ID = tostring(LocalPlayer.UserId)
-local API_KEY = "1b1c9295851cff0803132ab98a39a79390963379e922979aaf39c35271d23072"
+local API_KEY = "fa4c2b088c07832db41dfe7afb5b63d37dfd5c7075c5bea928c683281d1c9a4c"
 
 local function getRequestFunction()
     return (syn and syn.request)
