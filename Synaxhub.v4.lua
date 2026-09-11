@@ -16,7 +16,7 @@ local Camera = workspace.CurrentCamera
 local API_URL = "https://your-api-domain.com"
 local GUILD_ID = "YOUR_GUILD_ID_HERE"
 local USER_ID = tostring(LocalPlayer.UserId)
-local API_KEY = "52ba1a7d8403dcdb71afa9ece84081be0c22faebc12d6056e202f1b751816e41"
+local API_KEY = "1b1c9295851cff0803132ab98a39a79390963379e922979aaf39c35271d23072"
 
 local function getRequestFunction()
     return (syn and syn.request)
