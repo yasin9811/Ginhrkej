@@ -30,7 +30,7 @@ end
 -- in the UI. Ban/revoke actions remain controlled by the Discord bot/API.
 -- ============================================================================
 
-local C11_ACCESS_API_URL = "https://yasin9811.github.io/c11-api-redirect/"
+local C11_ACCESS_API_URL = "lime-abraham-mine-burns.trycloudflare.com"
 local C11_ACCESS_GUILD_ID = "1547303886078087250"
 local C11_ACCESS_API_KEY = "fa4c2b088c07832db41dfe7afb5b63d37dfd5c7075c5bea928c683281d1c9a4c"
 
