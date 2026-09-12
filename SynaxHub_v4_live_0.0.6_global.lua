@@ -1,0 +1,5724 @@
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ============================================================================
+-- SYNAX HUB WEBHOOK LOGGER
+-- Keep your webhook URL private. Paste it locally in WEBHOOK_URL.
+-- Sends only basic Roblox/game session information; never cookies, tokens or IPs.
+-- ============================================================================
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1547664741034496211/j2j3VLFuXbVuAEII5jhJXdJtG3VjrnRdrwVeMZJU2gAKX4XphXOWCfckDGf1c8ciywFy"
+local WEBHOOK_ENABLED = true
+
+local function getRequestFunction()
+    return (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+end
+
+-- ============================================================================
+-- C11 SYNAX ACCESS / BLACKLIST
+-- Server-side authorization. The API key is intentionally never displayed
+-- in the UI. Ban/revoke actions remain controlled by the Discord bot/API.
+-- ============================================================================
+
+local C11_ACCESS_API_URL = "https://lime-abraham-mine-burns.trycloudflare.com"
+local C11_ACCESS_GUILD_ID = "1547303886078087250"
+local C11_ACCESS_API_KEY = "fa4c2b088c07832db41dfe7afb5b63d37dfd5c7075c5bea928c683281d1c9a4c"
+
+local C11AccessState = {
+    Allowed = false,
+    Reason = nil,
+    ExpiresAt = nil,
+    CheckedAt = nil,
+    APIOnline = false
+}
+
+local function checkC11Access()
+    local req = getRequestFunction()
+    if not req then
+        return false, "HTTP request function is unavailable.", nil, false
+    end
+
+    local endpoint = C11_ACCESS_API_URL ..
+        "/api/access/" .. C11_ACCESS_GUILD_ID .. "/" .. tostring(LocalPlayer.UserId)
+
+    local ok, response = pcall(function()
+        return req({
+            Url = endpoint,
+            Method = "GET",
+            Headers = {
+                ["x-api-key"] = C11_ACCESS_API_KEY,
+                ["Content-Type"] = "application/json"
+            }
+        })
+    end)
+
+    if not ok or type(response) ~= "table" then
+        return false, "Access API request failed.", nil, false
+    end
+
+    local body = response.Body or response.body
+    if not body then
+        return false, "Access API returned no data.", nil, false
+    end
+
+    local decodeOk, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+
+    if not decodeOk or type(data) ~= "table" then
+        return false, "Invalid Access API response.", nil, false
+    end
+
+    if data.allowed == true then
+        return true, nil, nil, true
+    end
+
+    return false,
+        data.reason or data.message or "Blacklisted",
+        data.expiresAt or data.expires_at,
+        true
+end
+
+local function applyC11AccessCheck()
+    local allowed, reason, expiresAt, apiOnline = checkC11Access()
+
+    C11AccessState.Allowed = allowed == true
+    C11AccessState.Reason = reason
+    C11AccessState.ExpiresAt = expiresAt
+    C11AccessState.CheckedAt = os.time()
+    C11AccessState.APIOnline = apiOnline == true
+
+    return C11AccessState.Allowed
+end
+
+-- ============================================================================
+-- LIVE RESTRICTION UI
+-- Reusable version of the original access restriction panel.
+-- ============================================================================
+local LiveRestrictionGui = nil
+
+local function showRestrictionUI(reasonText, expiresAt, liveBan)
+    if LiveRestrictionGui and LiveRestrictionGui.Parent then
+        return
+    end
+
+    local HttpService = game:GetService("HttpService")
+    local deniedGui = Instance.new("ScreenGui")
+    deniedGui.Name = "C11SynaxAccessDenied"
+    deniedGui.ResetOnSpawn = false
+    deniedGui.IgnoreGuiInset = true
+    deniedGui.DisplayOrder = 999999
+    deniedGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    LiveRestrictionGui = deniedGui
+
+    local banReason = tostring(reasonText or C11AccessState.Reason or "Blacklisted")
+    local banDuration = expiresAt and tostring(expiresAt) or "Permanent"
+    local banIssued = os.date("%d %b %Y")
+    local banId = "C11-" .. string.upper(string.sub(HttpService:GenerateGUID(false):gsub("-", ""), 1, 8))
+
+    -- Background overlay
+    local overlay = Instance.new("Frame")
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.BackgroundColor3 = Color3.fromRGB(5, 6, 9)
+    overlay.BackgroundTransparency = 0.25
+    overlay.BorderSizePixel = 0
+    overlay.Parent = deniedGui
+
+    -- Responsive scale
+    local scale = Instance.new("UIScale")
+    scale.Scale = 1
+    scale.Parent = deniedGui
+
+    local function updateScale()
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local viewport = camera.ViewportSize
+
+        if viewport.X < 500 then
+            scale.Scale = math.clamp(viewport.X / 500, 0.72, 1)
+        elseif viewport.X > 1300 then
+            scale.Scale = 1.05
+        else
+            scale.Scale = 1
+        end
+    end
+
+    updateScale()
+
+    if workspace.CurrentCamera then
+        workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+    end
+
+    -- Main panel
+    local main = Instance.new("Frame")
+    main.Name = "RestrictionPanel"
+    main.AnchorPoint = Vector2.new(0.5, 0.5)
+    main.Position = UDim2.fromScale(0.5, 0.53)
+    main.Size = UDim2.fromOffset(455, 330)
+    main.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+    main.BorderSizePixel = 0
+    main.Parent = deniedGui
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 12)
+    mainCorner.Parent = main
+
+    local border = Instance.new("UIStroke")
+    border.Color = Color3.fromRGB(40, 43, 51)
+    border.Thickness = 1
+    border.Parent = main
+
+    -- Top bar
+    local top = Instance.new("Frame")
+    top.Size = UDim2.new(1, 0, 0, 52)
+    top.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
+    top.BorderSizePixel = 0
+    top.Parent = main
+
+    local topCorner = Instance.new("UICorner")
+    topCorner.CornerRadius = UDim.new(0, 12)
+    topCorner.Parent = top
+
+    local indicator = Instance.new("Frame")
+    indicator.Position = UDim2.fromOffset(18, 20)
+    indicator.Size = UDim2.fromOffset(7, 7)
+    indicator.BackgroundColor3 = Color3.fromRGB(224, 55, 66)
+    indicator.BorderSizePixel = 0
+    indicator.Parent = top
+
+    local indicatorCorner = Instance.new("UICorner")
+    indicatorCorner.CornerRadius = UDim.new(1, 0)
+    indicatorCorner.Parent = indicator
+
+    local brand = Instance.new("TextLabel")
+    brand.Position = UDim2.fromOffset(34, 14)
+    brand.Size = UDim2.fromOffset(70, 24)
+    brand.BackgroundTransparency = 1
+    brand.Text = "C11 SYNAX"
+    brand.TextColor3 = Color3.fromRGB(235, 236, 240)
+    brand.TextSize = 12
+    brand.Font = Enum.Font.GothamBold
+    brand.TextXAlignment = Enum.TextXAlignment.Left
+    brand.Parent = top
+
+    local brandSub = Instance.new("TextLabel")
+    brandSub.Position = UDim2.fromOffset(105, 16)
+    brandSub.Size = UDim2.fromOffset(130, 20)
+    brandSub.BackgroundTransparency = 1
+    brandSub.Text = "SECURITY"
+    brandSub.TextColor3 = Color3.fromRGB(88, 92, 102)
+    brandSub.TextSize = 8
+    brandSub.Font = Enum.Font.GothamMedium
+    brandSub.TextXAlignment = Enum.TextXAlignment.Left
+    brandSub.Parent = top
+
+    local close = Instance.new("TextButton")
+    close.AnchorPoint = Vector2.new(1, 0)
+    close.Position = UDim2.new(1, -15, 0, 13)
+    close.Size = UDim2.fromOffset(25, 25)
+    close.BackgroundTransparency = 1
+    close.Text = "×"
+    close.TextColor3 = Color3.fromRGB(85, 88, 97)
+    close.TextSize = 18
+    close.Font = Enum.Font.Gotham
+    close.Parent = top
+
+    -- Content
+    local content = Instance.new("Frame")
+    content.Position = UDim2.fromOffset(28, 70)
+    content.Size = UDim2.new(1, -56, 1, -86)
+    content.BackgroundTransparency = 1
+    content.Parent = main
+
+    local title = Instance.new("TextLabel")
+    title.Position = UDim2.fromOffset(0, 0)
+    title.Size = UDim2.new(1, 0, 0, 30)
+    title.BackgroundTransparency = 1
+    title.Text = "ACCESS RESTRICTED"
+    title.TextColor3 = Color3.fromRGB(242, 243, 246)
+    title.TextSize = 20
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = content
+
+    local description = Instance.new("TextLabel")
+    description.Position = UDim2.fromOffset(0, 31)
+    description.Size = UDim2.new(1, 0, 0, 20)
+    description.BackgroundTransparency = 1
+    description.Text = "Your account has been restricted from accessing this service."
+    description.TextColor3 = Color3.fromRGB(105, 109, 119)
+    description.TextSize = 9
+    description.Font = Enum.Font.GothamMedium
+    description.TextXAlignment = Enum.TextXAlignment.Left
+    description.Parent = content
+
+    -- Reason box
+    local reasonBox = Instance.new("Frame")
+    reasonBox.Position = UDim2.fromOffset(0, 65)
+    reasonBox.Size = UDim2.new(1, 0, 0, 58)
+    reasonBox.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+    reasonBox.BorderSizePixel = 0
+    reasonBox.Parent = content
+
+    local reasonCorner = Instance.new("UICorner")
+    reasonCorner.CornerRadius = UDim.new(0, 8)
+    reasonCorner.Parent = reasonBox
+
+    local reasonAccent = Instance.new("Frame")
+    reasonAccent.Size = UDim2.new(0, 2, 1, 0)
+    reasonAccent.BackgroundColor3 = Color3.fromRGB(220, 52, 63)
+    reasonAccent.BorderSizePixel = 0
+    reasonAccent.Parent = reasonBox
+
+    local reasonTitle = Instance.new("TextLabel")
+    reasonTitle.Position = UDim2.fromOffset(15, 8)
+    reasonTitle.Size = UDim2.new(1, -30, 0, 13)
+    reasonTitle.BackgroundTransparency = 1
+    reasonTitle.Text = "REASON FOR RESTRICTION"
+    reasonTitle.TextColor3 = Color3.fromRGB(82, 86, 96)
+    reasonTitle.TextSize = 7
+    reasonTitle.Font = Enum.Font.GothamBold
+    reasonTitle.TextXAlignment = Enum.TextXAlignment.Left
+    reasonTitle.Parent = reasonBox
+
+    local reason = Instance.new("TextLabel")
+    reason.Position = UDim2.fromOffset(15, 25)
+    reason.Size = UDim2.new(1, -30, 0, 22)
+    reason.BackgroundTransparency = 1
+    reason.Text = banReason
+    reason.TextColor3 = Color3.fromRGB(224, 72, 82)
+    reason.TextSize = 11
+    reason.Font = Enum.Font.GothamSemibold
+    reason.TextXAlignment = Enum.TextXAlignment.Left
+    reason.TextTruncate = Enum.TextTruncate.AtEnd
+    reason.Parent = reasonBox
+
+    -- Details
+    local function detail(label, value, x, y, width)
+        local labelObject = Instance.new("TextLabel")
+        labelObject.Position = UDim2.fromOffset(x, y)
+        labelObject.Size = UDim2.fromOffset(width, 14)
+        labelObject.BackgroundTransparency = 1
+        labelObject.Text = label .. "   " .. value
+        labelObject.TextColor3 = Color3.fromRGB(125, 129, 139)
+        labelObject.TextSize = 8
+        labelObject.Font = Enum.Font.GothamMedium
+        labelObject.TextXAlignment = Enum.TextXAlignment.Left
+        labelObject.TextTruncate = Enum.TextTruncate.AtEnd
+        labelObject.Parent = content
+    end
+
+    detail("ACCOUNT", tostring(LocalPlayer.Name), 0, 135, 200)
+    detail("USER ID", tostring(LocalPlayer.UserId), 220, 135, 170)
+    detail("DURATION", banDuration, 0, 157, 200)
+    detail("BAN ID", banId, 220, 157, 170)
+    detail("ISSUED", banIssued, 0, 179, 200)
+
+    local footerLine = Instance.new("Frame")
+    footerLine.Position = UDim2.fromOffset(0, 205)
+    footerLine.Size = UDim2.new(1, 0, 0, 1)
+    footerLine.BackgroundColor3 = Color3.fromRGB(32, 35, 42)
+    footerLine.BorderSizePixel = 0
+    footerLine.Parent = content
+
+    local footer = Instance.new("TextLabel")
+    footer.Position = UDim2.fromOffset(0, 217)
+    footer.Size = UDim2.new(0.55, 0, 0, 27)
+    footer.BackgroundTransparency = 1
+    footer.Text = "Think this restriction was made in error?\nYou can contact the C11 Synax support team."
+    footer.TextColor3 = Color3.fromRGB(82, 86, 96)
+    footer.TextSize = 7
+    footer.Font = Enum.Font.GothamMedium
+    footer.TextXAlignment = Enum.TextXAlignment.Left
+    footer.TextYAlignment = Enum.TextYAlignment.Top
+    footer.Parent = content
+
+    -- Appeal button (visual for now; existing access flow remains untouched)
+    local appeal = Instance.new("TextButton")
+    appeal.AnchorPoint = Vector2.new(1, 0)
+    appeal.Position = UDim2.new(1, 0, 0, 218)
+    appeal.Size = UDim2.fromOffset(135, 31)
+    appeal.BackgroundColor3 = Color3.fromRGB(29, 32, 40)
+    appeal.BorderSizePixel = 0
+    appeal.Text = "APPEAL BAN"
+    appeal.TextColor3 = Color3.fromRGB(205, 207, 213)
+    appeal.TextSize = 8
+    appeal.Font = Enum.Font.GothamBold
+    appeal.AutoButtonColor = false
+    appeal.Parent = content
+
+    local appealCorner = Instance.new("UICorner")
+    appealCorner.CornerRadius = UDim.new(0, 7)
+    appealCorner.Parent = appeal
+
+    local appealStroke = Instance.new("UIStroke")
+    appealStroke.Color = Color3.fromRGB(48, 51, 60)
+    appealStroke.Thickness = 1
+    appealStroke.Parent = appeal
+
+    appeal.MouseEnter:Connect(function()
+        TweenService:Create(
+            appeal,
+            TweenInfo.new(0.15),
+            {BackgroundColor3 = Color3.fromRGB(37, 40, 49)}
+        ):Play()
+    end)
+
+    appeal.MouseLeave:Connect(function()
+        TweenService:Create(
+            appeal,
+            TweenInfo.new(0.15),
+            {BackgroundColor3 = Color3.fromRGB(29, 32, 40)}
+        ):Play()
+    end)
+
+    -- Close is kept because this is a UI replacement; it does not change
+    -- the server-side access decision or grant access.
+    if not liveBan then
+        close.MouseButton1Click:Connect(function()
+            local tween = TweenService:Create(
+            main,
+            TweenInfo.new(0.25, Enum.EasingStyle.Quart),
+            {
+                Position = UDim2.fromScale(0.5, 0.55),
+                BackgroundTransparency = 1
+            }
+        )
+
+        tween:Play()
+            tween.Completed:Connect(function()
+                deniedGui:Destroy()
+            end)
+        end)
+    else
+        close.Visible = false
+    end
+
+    -- Open animation
+    main.BackgroundTransparency = 1
+    main.Position = UDim2.fromScale(0.5, 0.55)
+
+    TweenService:Create(
+        main,
+        TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        {
+            Position = UDim2.fromScale(0.5, 0.5),
+            BackgroundTransparency = 0
+        }
+    ):Play()
+
+    pcall(function()
+        deniedGui.Parent = CoreGui
+    end)
+
+    if not deniedGui.Parent then
+        deniedGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
+end
+
+if not applyC11AccessCheck() then
+    showRestrictionUI(C11AccessState.Reason, C11AccessState.ExpiresAt)
+    return
+end
+
+local function getGameName()
+    local MarketplaceService = game:GetService("MarketplaceService")
+    local ok, info = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId)
+    end)
+    if ok and info and info.Name then
+        return tostring(info.Name)
+    end
+    return "Unknown Game"
+end
+
+local function sendExecutionLog()
+    if not WEBHOOK_ENABLED then return end
+    if WEBHOOK_URL == "" or WEBHOOK_URL == "PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE" then return end
+
+    local HttpService = game:GetService("HttpService")
+    local req = getRequestFunction()
+    if not req then return end
+
+    local gameName = getGameName()
+    local now = os.time()
+    local avatarUrl = string.format(
+        "https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=180&height=180&format=png",
+        LocalPlayer.UserId
+    )
+
+    local payload = {
+        username = "Synax Hub Logger",
+        avatar_url = avatarUrl,
+        embeds = {{
+            title = "🚀 Synax Hub • Script Executed",
+            description = "A Synax Hub session has been started.",
+            color = 5793266,
+            thumbnail = {
+                url = avatarUrl
+            },
+            author = {
+                name = tostring(LocalPlayer.DisplayName) .. " (" .. tostring(LocalPlayer.Name) .. ")",
+                icon_url = avatarUrl,
+                url = "https://www.roblox.com/users/" .. tostring(LocalPlayer.UserId) .. "/profile"
+            },
+            fields = {
+                {name = "👤 Username", value = "`" .. tostring(LocalPlayer.Name) .. "`", inline = true},
+                {name = "🪪 User ID", value = "`" .. tostring(LocalPlayer.UserId) .. "`", inline = true},
+                {name = "🎮 Game", value = "`" .. gameName:gsub("`", "'") .. "`", inline = false},
+                {name = "🆔 Place ID", value = "`" .. tostring(game.PlaceId) .. "`", inline = true},
+                {name = "🖥️ Server Job ID", value = "`" .. tostring(game.JobId ~= "" and game.JobId or "Studio/Private") .. "`", inline = false},
+                {name = "🕐 Time", value = "<t:" .. tostring(now) .. ":F>\n<t:" .. tostring(now) .. ":R>", inline = true},
+            },
+            footer = {
+                text = "Synax Hub • Execution Logger"
+            },
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        }}
+    }
+
+    local body = HttpService:JSONEncode(payload)
+
+    pcall(function()
+        req({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = body
+        })
+    end)
+end
+
+task.spawn(function()
+    task.wait(1)
+    sendExecutionLog()
+end)
+
+
+-- ============================================================================
+-- ============================================================================
+-- SYNAX HUB GLOBAL LANGUAGE SYSTEM • 10 LANGUAGES • DROPDOWN BETA
+-- ============================================================================
+local LanguageState = { Current = "English" }
+local SupportedLanguages = {
+    {Code="EN", Name="English", Flag="🇬🇧"},
+    {Code="TU", Name="Turkish", Flag="🇹🇷"},
+    {Code="GE", Name="German", Flag="🇩🇪"},
+    {Code="FR", Name="French", Flag="🇫🇷"},
+    {Code="SP", Name="Spanish", Flag="🇪🇸"},
+    {Code="IT", Name="Italian", Flag="🇮🇹"},
+    {Code="PO", Name="Portuguese", Flag="🇵🇹"},
+    {Code="RU", Name="Russian", Flag="🇷🇺"},
+    {Code="JA", Name="Japanese", Flag="🇯🇵"},
+    {Code="KO", Name="Korean", Flag="🇰🇷"}
+}
+
+local L = {
+    English = {
+        ["Glow Custom Color"]="Glow Custom Color",
+        ["Hits per puddle"]="Hits per puddle",
+        ["Delay between fires"]="Delay between fires",
+        ["Teleport settle time"]="Teleport settle time",
+        ["Fish sell interval"]="Fish sell interval",
+        ["FOV Size"]="FOV Size",
+        ["Smoothness"]="Smoothness",
+        ["Prediction"]="Prediction",
+        ["Dashboard"]="Dashboard",
+        ["Information"]="Information",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Auto Eat",
+        ["Combat"]="Combat",
+        ["ESP"]="ESP",
+        ["Staff"]="Staff",
+        ["Extra"]="Extra",
+        ["Settings"]="Settings",
+        ["Select Language"]="Select Language",
+        ["Current Language"]="Current Language",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["Staff ESP"]="Staff ESP",
+        ["Staff Alerts"]="Staff Alerts",
+        ["Farm Protection"]="Farm Protection",
+        ["Leave on Staff Join"]="Leave on Staff Join",
+        ["SCAN STAFF"]="SCAN STAFF",
+        ["Auto Cook"]="Auto Cook",
+        ["Fish Farm"]="Fish Farm",
+        ["Auto Sell Fish"]="Auto Sell Fish",
+        ["Sell All Fish Now"]="Sell All Fish Now",
+        ["Teleport to Fishing Area"]="Teleport to Fishing Area",
+        ["Auto Mine"]="Auto Mine",
+        ["Auto Trash (EXP)"]="Auto Trash (EXP)",
+        ["Unlock Fists"]="Unlock Fists",
+        ["Janitor Farm"]="Janitor Farm",
+        ["Equip Mop"]="Equip Mop",
+        ["Clean Nearest Puddle"]="Clean Nearest Puddle",
+        ["Teleport to Janitor Area"]="Teleport to Janitor Area",
+        ["Cycle Through All Puddles"]="Cycle Through All Puddles",
+        ["Glow ESP (All White)"]="Glow ESP (All White)",
+        ["2D Box ESP"]="2D Box ESP",
+        ["Health Bar ESP"]="Health Bar ESP",
+        ["Target ESP (Top Lines)"]="Target ESP (Top Lines)",
+        ["Skeleton ESP"]="Skeleton ESP",
+        ["Name & Distance ESP"]="Name & Distance ESP",
+        ["Enable Auto Eat / Drink"]="Enable Auto Eat / Drink",
+        ["Teleport to Black Market"]="Teleport to Black Market",
+        ["Enable Mobile HUD Editor Overlay"]="Enable Mobile HUD Editor Overlay",
+        ["PC Aimbot"]="PC Aimbot",
+        ["Mobile Aimbot"]="Mobile Aimbot",
+        ["Hold RMB to Aim"]="Hold RMB to Aim",
+        ["Legit Wallcheck"]="Legit Wallcheck",
+        ["Team Check"]="Team Check",
+        ["Sticky Target"]="Sticky Target",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Anti AFK (Prevent Kick)"]="Anti AFK (Prevent Kick)",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Infinite Jump"]="Infinite Jump",
+        ["FullBright (Remove Darkness)"]="FullBright (Remove Darkness)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Turkish = {
+        ["Glow Custom Color"]="Özel Glow Rengi",
+        ["Hits per puddle"]="Su birikintisi vuruşu",
+        ["Delay between fires"]="Vuruşlar arası gecikme",
+        ["Teleport settle time"]="Işınlanma bekleme süresi",
+        ["Fish sell interval"]="Balık satış aralığı",
+        ["FOV Size"]="FOV Boyutu",
+        ["Smoothness"]="Yumuşaklık",
+        ["Prediction"]="Tahmin",
+        ["Dashboard"]="Kontrol Paneli",
+        ["Information"]="Bilgi",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Otomatik Yeme",
+        ["Combat"]="Savaş",
+        ["ESP"]="ESP",
+        ["Staff"]="Yetkili",
+        ["Extra"]="Ekstra",
+        ["Settings"]="Ayarlar",
+        ["Select Language"]="Dil Seç",
+        ["Current Language"]="Mevcut Dil",
+        ["Beta"]="Beta",
+        ["Enabled"]="Aktif",
+        ["Disabled"]="Devre Dışı",
+        ["ON"]="AÇIK",
+        ["OFF"]="KAPALI",
+        ["Staff Monitor"]="Yetkili Takibi",
+        ["No staff detected."]="Yetkili algılanmadı.",
+        ["Staff ESP"]="Yetkili ESP",
+        ["Staff Alerts"]="Yetkili Uyarıları",
+        ["Farm Protection"]="Farm Koruması",
+        ["Leave on Staff Join"]="Yetkili Gelince Ayrıl",
+        ["SCAN STAFF"]="YETKİLİLERİ TARA",
+        ["Auto Cook"]="Otomatik Pişirme",
+        ["Fish Farm"]="Balık Farmı",
+        ["Auto Sell Fish"]="Otomatik Balık Satışı",
+        ["Sell All Fish Now"]="Tüm Balıkları Şimdi Sat",
+        ["Teleport to Fishing Area"]="Balıkçılık Alanına Işınlan",
+        ["Auto Mine"]="Otomatik Maden",
+        ["Auto Trash (EXP)"]="Otomatik Çöp (EXP)",
+        ["Unlock Fists"]="Yumrukları Aç",
+        ["Janitor Farm"]="Hademe Farmı",
+        ["Equip Mop"]="Paspası Kuşan",
+        ["Clean Nearest Puddle"]="En Yakın Su Birikintisini Temizle",
+        ["Teleport to Janitor Area"]="Hademe Alanına Işınlan",
+        ["Cycle Through All Puddles"]="Tüm Su Birikintilerini Gez",
+        ["Glow ESP (All White)"]="Glow ESP (Tamamen Beyaz)",
+        ["2D Box ESP"]="2D Kutu ESP",
+        ["Health Bar ESP"]="Can Barı ESP",
+        ["Target ESP (Top Lines)"]="Hedef ESP (Üst Çizgiler)",
+        ["Skeleton ESP"]="İskelet ESP",
+        ["Name & Distance ESP"]="İsim ve Mesafe ESP",
+        ["Enable Auto Eat / Drink"]="Otomatik Yeme / İçmeyi Aç",
+        ["Teleport to Black Market"]="Black Market'e Işınlan",
+        ["Enable Mobile HUD Editor Overlay"]="Mobil HUD Düzenleyici Katmanını Aç",
+        ["PC Aimbot"]="PC Aimbot",
+        ["Mobile Aimbot"]="Mobil Aimbot",
+        ["Hold RMB to Aim"]="Nişan Almak İçin RMB Basılı Tut",
+        ["Legit Wallcheck"]="Legit Duvar Kontrolü",
+        ["Team Check"]="Takım Kontrolü",
+        ["Sticky Target"]="Hedefi Sabitle",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="C11 ERİŞİMİNİ TEKRAR KONTROL ET",
+        ["Anti AFK (Prevent Kick)"]="Anti AFK (Atılmayı Önle)",
+        ["Noclip (Walk Through Walls)"]="Noclip (Duvarlardan Geç)",
+        ["Infinite Jump"]="Sonsuz Zıplama",
+        ["FullBright (Remove Darkness)"]="FullBright (Karanlığı Kaldır)",
+        ["Staff Online"]="Çevrimiçi Yetkili",
+        ["FPS Rate"]="FPS Hızı",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Sunucu Oyuncuları",
+        ["Active Friends"]="Aktif Arkadaşlar",
+        ["Server Hub"]="Sunucu Hub",
+        ["Server Region"]="Sunucu Bölgesi",
+        ["Unavailable"]="Kullanılamıyor",
+        ["Janitor Status"]="Hademe Durumu",
+        ["Status"]="Durum",
+        ["Idle"]="Boşta",
+        ["Blacklist / Access"]="Kara Liste / Erişim",
+        ["AUTHORIZED"]="İZİNLİ",
+        ["DENIED"]="REDDEDİLDİ",
+        ["Access API"]="Erişim API",
+        ["ONLINE"]="ÇEVRİMİÇİ",
+        ["OFFLINE"]="ÇEVRİMDIŞI",
+        ["User ID"]="Kullanıcı ID",
+        ["Restriction"]="Kısıtlama",
+        ["None"]="Yok",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Canlı Yasak / Erişim",
+        ["Live Announcements"]="Canlı Duyurular",
+        ["MONITORING"]="İZLENİYOR",
+        ["Exploit & Utility Settings"]="Araç ve Utility Ayarları",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ERİŞİM",
+        ["LIVE SERVICES"]="CANLI SERVİSLER",
+        ["Farming"]="Farm",
+        ["Auto Hunger System"]="Otomatik Açlık Sistemi",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobil HUD Düzenleyici",
+        ["HUD EDITOR"]="HUD DÜZENLEYİCİ",
+        ["Selected: None"]="Seçili: Yok",
+        ["RESET SCRIPT"]="SCRIPTİ SIFIRLA",
+        ["Project Information"]="Proje Bilgileri",
+        ["Important Notice"]="Önemli Uyarı",
+        ["Development team"]="Geliştirme Ekibi",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Güncellemesi (beta - 0.0.5)"
+    },
+    German = {
+        ["Glow Custom Color"]="Benutzerdefinierte Glow-Farbe",
+        ["Hits per puddle"]="Treffer pro Pfütze",
+        ["Delay between fires"]="Verzögerung zwischen Treffern",
+        ["Teleport settle time"]="Teleport-Wartezeit",
+        ["Fish sell interval"]="Fisch-Verkaufsintervall",
+        ["FOV Size"]="FOV-Größe",
+        ["Smoothness"]="Glättung",
+        ["Prediction"]="Vorhersage",
+        ["Dashboard"]="Dashboard",
+        ["Information"]="Information",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Automatisches Essen",
+        ["Combat"]="Kampf",
+        ["ESP"]="ESP",
+        ["Staff"]="Team",
+        ["Extra"]="Extra",
+        ["Settings"]="Einstellungen",
+        ["Select Language"]="Sprache wählen",
+        ["Current Language"]="Aktuelle Sprache",
+        ["Staff ESP"]="Team-ESP",
+        ["Staff Alerts"]="Team-Warnungen",
+        ["Farm Protection"]="Farm-Schutz",
+        ["Leave on Staff Join"]="Bei Team-Beitritt verlassen",
+        ["SCAN STAFF"]="TEAM SCANNEN",
+        ["Auto Cook"]="Automatisches Kochen",
+        ["Fish Farm"]="Fisch-Farm",
+        ["Auto Sell Fish"]="Fische automatisch verkaufen",
+        ["Sell All Fish Now"]="Alle Fische verkaufen",
+        ["Teleport to Fishing Area"]="Zum Angelbereich teleportieren",
+        ["Auto Mine"]="Automatische Mine",
+        ["Auto Trash (EXP)"]="Automatischer Müll (EXP)",
+        ["Unlock Fists"]="Fäuste freischalten",
+        ["Janitor Farm"]="Hausmeister-Farm",
+        ["Equip Mop"]="Mopp ausrüsten",
+        ["Clean Nearest Puddle"]="Nächste Pfütze reinigen",
+        ["Teleport to Janitor Area"]="Zum Hausmeisterbereich teleportieren",
+        ["Cycle Through All Puddles"]="Alle Pfützen durchlaufen",
+        ["Glow ESP (All White)"]="Glow-ESP (Alles Weiß)",
+        ["2D Box ESP"]="2D-Box-ESP",
+        ["Health Bar ESP"]="Lebensbalken-ESP",
+        ["Target ESP (Top Lines)"]="Ziel-ESP (Obere Linien)",
+        ["Skeleton ESP"]="Skelett-ESP",
+        ["Name & Distance ESP"]="Name & Distanz ESP",
+        ["Enable Auto Eat / Drink"]="Automatisches Essen / Trinken aktivieren",
+        ["Teleport to Black Market"]="Zum Schwarzmarkt teleportieren",
+        ["Enable Mobile HUD Editor Overlay"]="Mobiles HUD-Editor-Overlay aktivieren",
+        ["PC Aimbot"]="PC-Aimbot",
+        ["Mobile Aimbot"]="Mobiler Aimbot",
+        ["Hold RMB to Aim"]="RMB zum Zielen halten",
+        ["Legit Wallcheck"]="Legit-Wandprüfung",
+        ["Team Check"]="Teamprüfung",
+        ["Sticky Target"]="Ziel halten",
+        ["Infinite Jump"]="Unendlicher Sprung",
+        ["FullBright (Remove Darkness)"]="FullBright (Dunkelheit entfernen)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (Kick verhindern)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    French = {
+        ["Glow Custom Color"]="Couleur Glow personnalisée",
+        ["Hits per puddle"]="Coups par flaque",
+        ["Delay between fires"]="Délai entre les coups",
+        ["Teleport settle time"]="Temps de stabilisation du téléport",
+        ["Fish sell interval"]="Intervalle de vente des poissons",
+        ["FOV Size"]="Taille du FOV",
+        ["Smoothness"]="Fluidité",
+        ["Prediction"]="Prédiction",
+        ["Dashboard"]="Tableau de bord",
+        ["Information"]="Informations",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Nourriture automatique",
+        ["Combat"]="Combat",
+        ["ESP"]="ESP",
+        ["Staff"]="Staff",
+        ["Extra"]="Extra",
+        ["Settings"]="Paramètres",
+        ["Select Language"]="Choisir la langue",
+        ["Current Language"]="Langue actuelle",
+        ["Staff ESP"]="ESP du staff",
+        ["Staff Alerts"]="Alertes staff",
+        ["Farm Protection"]="Protection du farm",
+        ["Leave on Staff Join"]="Quitter à l’arrivée du staff",
+        ["SCAN STAFF"]="SCANNER LE STAFF",
+        ["Auto Cook"]="Cuisine automatique",
+        ["Fish Farm"]="Farm de pêche",
+        ["Auto Sell Fish"]="Vente auto des poissons",
+        ["Sell All Fish Now"]="Vendre tous les poissons",
+        ["Teleport to Fishing Area"]="Téléporter à la zone de pêche",
+        ["Auto Mine"]="Mine automatique",
+        ["Auto Trash (EXP)"]="Poubelle automatique (EXP)",
+        ["Unlock Fists"]="Débloquer les poings",
+        ["Janitor Farm"]="Farm concierge",
+        ["Equip Mop"]="Équiper la serpillière",
+        ["Clean Nearest Puddle"]="Nettoyer la flaque la plus proche",
+        ["Teleport to Janitor Area"]="Téléporter à la zone concierge",
+        ["Cycle Through All Puddles"]="Parcourir toutes les flaques",
+        ["Glow ESP (All White)"]="ESP Glow (Tout blanc)",
+        ["2D Box ESP"]="ESP boîte 2D",
+        ["Health Bar ESP"]="ESP barre de vie",
+        ["Target ESP (Top Lines)"]="ESP cible (lignes supérieures)",
+        ["Skeleton ESP"]="ESP squelette",
+        ["Name & Distance ESP"]="ESP nom et distance",
+        ["Enable Auto Eat / Drink"]="Activer nourriture / boisson auto",
+        ["Teleport to Black Market"]="Téléporter au marché noir",
+        ["Enable Mobile HUD Editor Overlay"]="Activer l’overlay HUD mobile",
+        ["PC Aimbot"]="Aimbot PC",
+        ["Mobile Aimbot"]="Aimbot mobile",
+        ["Hold RMB to Aim"]="Maintenir RMB pour viser",
+        ["Legit Wallcheck"]="Vérification murale légitime",
+        ["Team Check"]="Vérification équipe",
+        ["Sticky Target"]="Cible persistante",
+        ["Infinite Jump"]="Saut infini",
+        ["FullBright (Remove Darkness)"]="FullBright (Retirer l’obscurité)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (Éviter le kick)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Spanish = {
+        ["Glow Custom Color"]="Color Glow personalizada",
+        ["Hits per puddle"]="Golpes por charco",
+        ["Delay between fires"]="Retraso entre golpes",
+        ["Teleport settle time"]="Tiempo de estabilización del teletransporte",
+        ["Fish sell interval"]="Intervalo de venta de peces",
+        ["FOV Size"]="Tamaño del FOV",
+        ["Smoothness"]="Suavidad",
+        ["Prediction"]="Predicción",
+        ["Dashboard"]="Panel",
+        ["Information"]="Información",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Comida automática",
+        ["Combat"]="Combate",
+        ["ESP"]="ESP",
+        ["Staff"]="Staff",
+        ["Extra"]="Extra",
+        ["Settings"]="Ajustes",
+        ["Select Language"]="Elegir idioma",
+        ["Current Language"]="Idioma actual",
+        ["Staff ESP"]="ESP de staff",
+        ["Staff Alerts"]="Alertas de staff",
+        ["Farm Protection"]="Protección del farm",
+        ["Leave on Staff Join"]="Salir al entrar un staff",
+        ["SCAN STAFF"]="ESCANEAR STAFF",
+        ["Auto Cook"]="Cocina automática",
+        ["Fish Farm"]="Farm de pesca",
+        ["Auto Sell Fish"]="Venta automática de peces",
+        ["Sell All Fish Now"]="Vender todos los peces",
+        ["Teleport to Fishing Area"]="Teletransportarse a pesca",
+        ["Auto Mine"]="Minería automática",
+        ["Auto Trash (EXP)"]="Basura automática (EXP)",
+        ["Unlock Fists"]="Desbloquear puños",
+        ["Janitor Farm"]="Farm de limpieza",
+        ["Equip Mop"]="Equipar fregona",
+        ["Clean Nearest Puddle"]="Limpiar el charco más cercano",
+        ["Teleport to Janitor Area"]="Teletransportarse a limpieza",
+        ["Cycle Through All Puddles"]="Recorrer todos los charcos",
+        ["Glow ESP (All White)"]="ESP Glow (Todo blanco)",
+        ["2D Box ESP"]="ESP de caja 2D",
+        ["Health Bar ESP"]="ESP de vida",
+        ["Target ESP (Top Lines)"]="ESP de objetivo (líneas superiores)",
+        ["Skeleton ESP"]="ESP de esqueleto",
+        ["Name & Distance ESP"]="ESP de nombre y distancia",
+        ["Enable Auto Eat / Drink"]="Activar comida / bebida automática",
+        ["Teleport to Black Market"]="Teletransportarse al mercado negro",
+        ["Enable Mobile HUD Editor Overlay"]="Activar editor HUD móvil",
+        ["PC Aimbot"]="Aimbot PC",
+        ["Mobile Aimbot"]="Aimbot móvil",
+        ["Hold RMB to Aim"]="Mantener RMB para apuntar",
+        ["Legit Wallcheck"]="Comprobación de paredes",
+        ["Team Check"]="Comprobar equipo",
+        ["Sticky Target"]="Objetivo fijo",
+        ["Infinite Jump"]="Salto infinito",
+        ["FullBright (Remove Darkness)"]="FullBright (Quitar oscuridad)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (Evitar expulsión)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Italian = {
+        ["Glow Custom Color"]="Colore Glow personalizzato",
+        ["Hits per puddle"]="Colpi per pozzanghera",
+        ["Delay between fires"]="Ritardo tra i colpi",
+        ["Teleport settle time"]="Tempo stabilizzazione teletrasporto",
+        ["Fish sell interval"]="Intervallo vendita pesci",
+        ["FOV Size"]="Dimensione FOV",
+        ["Smoothness"]="Fluidità",
+        ["Prediction"]="Previsione",
+        ["Dashboard"]="Dashboard",
+        ["Information"]="Informazioni",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Cibo automatico",
+        ["Combat"]="Combattimento",
+        ["ESP"]="ESP",
+        ["Staff"]="Staff",
+        ["Extra"]="Extra",
+        ["Settings"]="Impostazioni",
+        ["Select Language"]="Scegli lingua",
+        ["Current Language"]="Lingua attuale",
+        ["Staff ESP"]="ESP staff",
+        ["Staff Alerts"]="Avvisi staff",
+        ["Farm Protection"]="Protezione farm",
+        ["Leave on Staff Join"]="Esci quando entra lo staff",
+        ["SCAN STAFF"]="SCANSIONA STAFF",
+        ["Auto Cook"]="Cucina automatica",
+        ["Fish Farm"]="Farm pesca",
+        ["Auto Sell Fish"]="Vendita automatica pesci",
+        ["Sell All Fish Now"]="Vendi tutti i pesci",
+        ["Teleport to Fishing Area"]="Teletrasporto area pesca",
+        ["Auto Mine"]="Miniera automatica",
+        ["Auto Trash (EXP)"]="Cestino automatico (EXP)",
+        ["Unlock Fists"]="Sblocca pugni",
+        ["Janitor Farm"]="Farm bidello",
+        ["Equip Mop"]="Equipaggia mocio",
+        ["Clean Nearest Puddle"]="Pulisci pozzanghera più vicina",
+        ["Teleport to Janitor Area"]="Teletrasporto area bidello",
+        ["Cycle Through All Puddles"]="Cicla tutte le pozzanghere",
+        ["Glow ESP (All White)"]="Glow ESP (Tutto bianco)",
+        ["2D Box ESP"]="ESP box 2D",
+        ["Health Bar ESP"]="ESP barra salute",
+        ["Target ESP (Top Lines)"]="ESP bersaglio (linee superiori)",
+        ["Skeleton ESP"]="ESP scheletro",
+        ["Name & Distance ESP"]="ESP nome e distanza",
+        ["Enable Auto Eat / Drink"]="Attiva cibo / bevande automatici",
+        ["Teleport to Black Market"]="Teletrasporto al mercato nero",
+        ["Enable Mobile HUD Editor Overlay"]="Attiva overlay editor HUD mobile",
+        ["PC Aimbot"]="Aimbot PC",
+        ["Mobile Aimbot"]="Aimbot mobile",
+        ["Hold RMB to Aim"]="Tieni premuto RMB per mirare",
+        ["Legit Wallcheck"]="Controllo pareti",
+        ["Team Check"]="Controllo squadra",
+        ["Sticky Target"]="Bersaglio fisso",
+        ["Infinite Jump"]="Salto infinito",
+        ["FullBright (Remove Darkness)"]="FullBright (Rimuovi oscurità)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (Evita kick)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Portuguese = {
+        ["Glow Custom Color"]="Cor Glow personalizada",
+        ["Hits per puddle"]="Golpes por poça",
+        ["Delay between fires"]="Atraso entre golpes",
+        ["Teleport settle time"]="Tempo de estabilização do teleporte",
+        ["Fish sell interval"]="Intervalo de venda de peixes",
+        ["FOV Size"]="Tamanho do FOV",
+        ["Smoothness"]="Suavidade",
+        ["Prediction"]="Previsão",
+        ["Dashboard"]="Painel",
+        ["Information"]="Informações",
+        ["Farm"]="Farm",
+        ["Auto Eat"]="Comer automaticamente",
+        ["Combat"]="Combate",
+        ["ESP"]="ESP",
+        ["Staff"]="Staff",
+        ["Extra"]="Extra",
+        ["Settings"]="Configurações",
+        ["Select Language"]="Selecionar idioma",
+        ["Current Language"]="Idioma atual",
+        ["Staff ESP"]="ESP da staff",
+        ["Staff Alerts"]="Alertas da staff",
+        ["Farm Protection"]="Proteção do farm",
+        ["Leave on Staff Join"]="Sair quando staff entrar",
+        ["SCAN STAFF"]="VERIFICAR STAFF",
+        ["Auto Cook"]="Cozinhar automaticamente",
+        ["Fish Farm"]="Farm de pesca",
+        ["Auto Sell Fish"]="Vender peixes automaticamente",
+        ["Sell All Fish Now"]="Vender todos os peixes",
+        ["Teleport to Fishing Area"]="Teleportar para a pesca",
+        ["Auto Mine"]="Mineração automática",
+        ["Auto Trash (EXP)"]="Lixo automático (EXP)",
+        ["Unlock Fists"]="Desbloquear punhos",
+        ["Janitor Farm"]="Farm de limpeza",
+        ["Equip Mop"]="Equipar esfregão",
+        ["Clean Nearest Puddle"]="Limpar poça mais próxima",
+        ["Teleport to Janitor Area"]="Teleportar para área de limpeza",
+        ["Cycle Through All Puddles"]="Percorrer todas as poças",
+        ["Glow ESP (All White)"]="Glow ESP (Tudo branco)",
+        ["2D Box ESP"]="ESP de caixa 2D",
+        ["Health Bar ESP"]="ESP de barra de vida",
+        ["Target ESP (Top Lines)"]="ESP de alvo (linhas superiores)",
+        ["Skeleton ESP"]="ESP de esqueleto",
+        ["Name & Distance ESP"]="ESP de nome e distância",
+        ["Enable Auto Eat / Drink"]="Ativar comer / beber automático",
+        ["Teleport to Black Market"]="Teleportar para o mercado negro",
+        ["Enable Mobile HUD Editor Overlay"]="Ativar editor HUD móvel",
+        ["PC Aimbot"]="Aimbot PC",
+        ["Mobile Aimbot"]="Aimbot móvel",
+        ["Hold RMB to Aim"]="Segurar RMB para mirar",
+        ["Legit Wallcheck"]="Verificação de parede",
+        ["Team Check"]="Verificação de equipe",
+        ["Sticky Target"]="Alvo fixo",
+        ["Infinite Jump"]="Pulo infinito",
+        ["FullBright (Remove Darkness)"]="FullBright (Remover escuridão)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (Evitar kick)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Russian = {
+        ["Glow Custom Color"]="Настраиваемый цвет Glow",
+        ["Hits per puddle"]="Ударов по луже",
+        ["Delay between fires"]="Задержка между ударами",
+        ["Teleport settle time"]="Время стабилизации телепорта",
+        ["Fish sell interval"]="Интервал продажи рыбы",
+        ["FOV Size"]="Размер FOV",
+        ["Smoothness"]="Плавность",
+        ["Prediction"]="Прогноз",
+        ["Dashboard"]="Панель",
+        ["Information"]="Информация",
+        ["Farm"]="Фарм",
+        ["Auto Eat"]="Автоеда",
+        ["Combat"]="Бой",
+        ["ESP"]="ESP",
+        ["Staff"]="Персонал",
+        ["Extra"]="Дополнительно",
+        ["Settings"]="Настройки",
+        ["Select Language"]="Выбрать язык",
+        ["Current Language"]="Текущий язык",
+        ["Staff ESP"]="ESP персонала",
+        ["Staff Alerts"]="Оповещения персонала",
+        ["Farm Protection"]="Защита фарма",
+        ["Leave on Staff Join"]="Выйти при входе персонала",
+        ["SCAN STAFF"]="СКАНИРОВАТЬ ПЕРСОНАЛ",
+        ["Auto Cook"]="Автоготовка",
+        ["Fish Farm"]="Рыбный фарм",
+        ["Auto Sell Fish"]="Автопродажа рыбы",
+        ["Sell All Fish Now"]="Продать всю рыбу",
+        ["Teleport to Fishing Area"]="Телепорт к рыбалке",
+        ["Auto Mine"]="Автомайнинг",
+        ["Auto Trash (EXP)"]="Автомусор (EXP)",
+        ["Unlock Fists"]="Разблокировать кулаки",
+        ["Janitor Farm"]="Фарм уборщика",
+        ["Equip Mop"]="Экипировать швабру",
+        ["Clean Nearest Puddle"]="Убрать ближайшую лужу",
+        ["Teleport to Janitor Area"]="Телепорт к уборщику",
+        ["Cycle Through All Puddles"]="Обойти все лужи",
+        ["Glow ESP (All White)"]="Glow ESP (Всё белое)",
+        ["2D Box ESP"]="2D Box ESP",
+        ["Health Bar ESP"]="ESP здоровья",
+        ["Target ESP (Top Lines)"]="ESP цели (верхние линии)",
+        ["Skeleton ESP"]="ESP скелета",
+        ["Name & Distance ESP"]="ESP имени и расстояния",
+        ["Enable Auto Eat / Drink"]="Включить автоеду / напитки",
+        ["Teleport to Black Market"]="Телепорт на чёрный рынок",
+        ["Enable Mobile HUD Editor Overlay"]="Включить мобильный HUD-редактор",
+        ["PC Aimbot"]="PC аимбот",
+        ["Mobile Aimbot"]="Мобильный аимбот",
+        ["Hold RMB to Aim"]="Удерживать RMB для прицела",
+        ["Legit Wallcheck"]="Проверка стен",
+        ["Team Check"]="Проверка команды",
+        ["Sticky Target"]="Фиксация цели",
+        ["Infinite Jump"]="Бесконечный прыжок",
+        ["FullBright (Remove Darkness)"]="FullBright (Убрать темноту)",
+        ["Anti AFK (Prevent Kick)"]="Анти-AFK (Без кика)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Japanese = {
+        ["Glow Custom Color"]="Glowカスタムカラー",
+        ["Hits per puddle"]="水たまりごとのヒット数",
+        ["Delay between fires"]="攻撃間隔",
+        ["Teleport settle time"]="テレポート安定待ち時間",
+        ["Fish sell interval"]="魚売却間隔",
+        ["FOV Size"]="FOVサイズ",
+        ["Smoothness"]="滑らかさ",
+        ["Prediction"]="予測",
+        ["Dashboard"]="ダッシュボード",
+        ["Information"]="情報",
+        ["Farm"]="ファーム",
+        ["Auto Eat"]="自動食事",
+        ["Combat"]="戦闘",
+        ["ESP"]="ESP",
+        ["Staff"]="スタッフ",
+        ["Extra"]="その他",
+        ["Settings"]="設定",
+        ["Select Language"]="言語を選択",
+        ["Current Language"]="現在の言語",
+        ["Staff ESP"]="スタッフESP",
+        ["Staff Alerts"]="スタッフ通知",
+        ["Farm Protection"]="ファーム保護",
+        ["Leave on Staff Join"]="スタッフ参加時に退出",
+        ["SCAN STAFF"]="スタッフをスキャン",
+        ["Auto Cook"]="自動調理",
+        ["Fish Farm"]="釣りファーム",
+        ["Auto Sell Fish"]="魚を自動販売",
+        ["Sell All Fish Now"]="魚をすべて売る",
+        ["Teleport to Fishing Area"]="釣り場へテレポート",
+        ["Auto Mine"]="自動採掘",
+        ["Auto Trash (EXP)"]="自動ゴミ (EXP)",
+        ["Unlock Fists"]="拳をアンロック",
+        ["Janitor Farm"]="清掃ファーム",
+        ["Equip Mop"]="モップを装備",
+        ["Clean Nearest Puddle"]="最寄りの水たまりを掃除",
+        ["Teleport to Janitor Area"]="清掃エリアへテレポート",
+        ["Cycle Through All Puddles"]="すべての水たまりを巡回",
+        ["Glow ESP (All White)"]="Glow ESP（全白）",
+        ["2D Box ESP"]="2DボックスESP",
+        ["Health Bar ESP"]="体力バーESP",
+        ["Target ESP (Top Lines)"]="ターゲットESP（上線）",
+        ["Skeleton ESP"]="スケルトンESP",
+        ["Name & Distance ESP"]="名前＆距離ESP",
+        ["Enable Auto Eat / Drink"]="自動食事 / 飲み物を有効化",
+        ["Teleport to Black Market"]="闇市場へテレポート",
+        ["Enable Mobile HUD Editor Overlay"]="モバイルHUDエディターを有効化",
+        ["PC Aimbot"]="PCエイムボット",
+        ["Mobile Aimbot"]="モバイルエイムボット",
+        ["Hold RMB to Aim"]="RMB長押しで照準",
+        ["Legit Wallcheck"]="正当な壁チェック",
+        ["Team Check"]="チームチェック",
+        ["Sticky Target"]="ターゲット固定",
+        ["Infinite Jump"]="無限ジャンプ",
+        ["FullBright (Remove Darkness)"]="FullBright（暗闇を除去）",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK（キック防止）",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    },
+    Korean = {
+        ["Glow Custom Color"]="사용자 지정 Glow 색상",
+        ["Hits per puddle"]="웅덩이당 타격 수",
+        ["Delay between fires"]="타격 간 지연",
+        ["Teleport settle time"]="순간이동 안정화 시간",
+        ["Fish sell interval"]="물고기 판매 간격",
+        ["FOV Size"]="FOV 크기",
+        ["Smoothness"]="부드러움",
+        ["Prediction"]="예측",
+        ["Dashboard"]="대시보드",
+        ["Information"]="정보",
+        ["Farm"]="파밍",
+        ["Auto Eat"]="자동 음식",
+        ["Combat"]="전투",
+        ["ESP"]="ESP",
+        ["Staff"]="스태프",
+        ["Extra"]="추가",
+        ["Settings"]="설정",
+        ["Select Language"]="언어 선택",
+        ["Current Language"]="현재 언어",
+        ["Staff ESP"]="스태프 ESP",
+        ["Staff Alerts"]="스태프 알림",
+        ["Farm Protection"]="파밍 보호",
+        ["Leave on Staff Join"]="스태프 입장 시 나가기",
+        ["SCAN STAFF"]="스태프 스캔",
+        ["Auto Cook"]="자동 요리",
+        ["Fish Farm"]="낚시 파밍",
+        ["Auto Sell Fish"]="물고기 자동 판매",
+        ["Sell All Fish Now"]="물고기 전부 판매",
+        ["Teleport to Fishing Area"]="낚시 지역으로 순간이동",
+        ["Auto Mine"]="자동 채굴",
+        ["Auto Trash (EXP)"]="자동 쓰레기 (EXP)",
+        ["Unlock Fists"]="주먹 잠금 해제",
+        ["Janitor Farm"]="청소부 파밍",
+        ["Equip Mop"]="대걸레 장착",
+        ["Clean Nearest Puddle"]="가장 가까운 물웅덩이 청소",
+        ["Teleport to Janitor Area"]="청소부 지역으로 순간이동",
+        ["Cycle Through All Puddles"]="모든 물웅덩이 순회",
+        ["Glow ESP (All White)"]="Glow ESP (전체 흰색)",
+        ["2D Box ESP"]="2D 박스 ESP",
+        ["Health Bar ESP"]="체력 바 ESP",
+        ["Target ESP (Top Lines)"]="타겟 ESP (상단 라인)",
+        ["Skeleton ESP"]="스켈레톤 ESP",
+        ["Name & Distance ESP"]="이름 및 거리 ESP",
+        ["Enable Auto Eat / Drink"]="자동 음식 / 음료 활성화",
+        ["Teleport to Black Market"]="암시장으로 순간이동",
+        ["Enable Mobile HUD Editor Overlay"]="모바일 HUD 편집기 오버레이 활성화",
+        ["PC Aimbot"]="PC 에임봇",
+        ["Mobile Aimbot"]="모바일 에임봇",
+        ["Hold RMB to Aim"]="RMB를 눌러 조준",
+        ["Legit Wallcheck"]="벽 검사",
+        ["Team Check"]="팀 검사",
+        ["Sticky Target"]="타겟 고정",
+        ["Infinite Jump"]="무한 점프",
+        ["FullBright (Remove Darkness)"]="FullBright (어둠 제거)",
+        ["Anti AFK (Prevent Kick)"]="Anti-AFK (킥 방지)",
+        ["Beta"]="Beta",
+        ["Enabled"]="Enabled",
+        ["Disabled"]="Disabled",
+        ["ON"]="ON",
+        ["OFF"]="OFF",
+        ["Staff Monitor"]="Staff Monitor",
+        ["No staff detected."]="No staff detected.",
+        ["FOV"]="FOV",
+        ["RE-CHECK C11 ACCESS"]="RE-CHECK C11 ACCESS",
+        ["Noclip (Walk Through Walls)"]="Noclip (Walk Through Walls)",
+        ["Staff Online"]="Staff Online",
+        ["FPS Rate"]="FPS Rate",
+        ["MS (Ping)"]="MS (Ping)",
+        ["Server Players"]="Server Players",
+        ["Active Friends"]="Active Friends",
+        ["Server Hub"]="Server Hub",
+        ["Server Region"]="Server Region",
+        ["Unavailable"]="Unavailable",
+        ["Janitor Status"]="Janitor Status",
+        ["Status"]="Status",
+        ["Idle"]="Idle",
+        ["Blacklist / Access"]="Blacklist / Access",
+        ["AUTHORIZED"]="AUTHORIZED",
+        ["DENIED"]="DENIED",
+        ["Access API"]="Access API",
+        ["ONLINE"]="ONLINE",
+        ["OFFLINE"]="OFFLINE",
+        ["User ID"]="User ID",
+        ["Restriction"]="Restriction",
+        ["None"]="None",
+        ["Webhook Logger"]="Webhook Logger",
+        ["Live Ban / Access"]="Live Ban / Access",
+        ["Live Announcements"]="Live Announcements",
+        ["MONITORING"]="MONITORING",
+        ["Exploit & Utility Settings"]="Exploit & Utility Settings",
+        ["C11 SYNAX ACCESS"]="C11 SYNAX ACCESS",
+        ["LIVE SERVICES"]="LIVE SERVICES",
+        ["Farming"]="Farming",
+        ["Auto Hunger System"]="Auto Hunger System",
+        ["Black Market"]="Black Market",
+        ["Mobile HUD Editor"]="Mobile HUD Editor",
+        ["HUD EDITOR"]="HUD EDITOR",
+        ["Selected: None"]="Selected: None",
+        ["RESET SCRIPT"]="RESET SCRIPT",
+        ["Project Information"]="Project Information",
+        ["Important Notice"]="Important Notice",
+        ["Development team"]="Development team",
+        ["Synax Hub Update (beta - 0.0.6)"]="Synax Hub Update (beta - 0.0.6)"
+    }
+}
+
+local function Translate(key)
+    local lang = L[LanguageState.Current]
+    if lang and lang[key] then return lang[key] end
+    return (L.English[key] or key)
+end
+
+local Config = {
+    WindowSize = UDim2.new(0, 520, 0, 340),       
+    BgColor = Color3.fromRGB(15, 17, 22),         
+    SidebarColor = Color3.fromRGB(11, 12, 16),    
+    ContainerColor = Color3.fromRGB(22, 25, 33),  
+    ContainerActive = Color3.fromRGB(38, 43, 58), 
+    Accent = Color3.fromRGB(255, 255, 255),       
+    HighlightText = Color3.fromRGB(95, 145, 255), 
+    TextPrimary = Color3.fromRGB(245, 245, 245),  
+    TextSecondary = Color3.fromRGB(130, 135, 150),
+    WarningYellow = Color3.fromRGB(240, 200, 80),
+    CloseRed = Color3.fromRGB(255, 70, 70),       
+    Discord = "https://discord.gg/synaxhub",
+    YouTube = "https://www.youtube.com/@llevis-o2u",
+    YouTubeName = "Synax Hub YouTube",
+    Version = "beta - 0.0.6"
+}
+
+local HubSettings = {
+    GlowAllWhite = false,
+    GlowColor = Color3.fromRGB(255, 255, 255),
+    BoxEsp = false,
+    HealthBar = false,
+    TargetLines = false,
+    SkeletonEsp = false,
+    NameDistanceEsp = false,
+    Noclip = false,
+    InfiniteJump = false,
+    FullBright = false
+}
+
+local ActiveDrawings = {}
+
+-- PC Aimbot
+local AimbotState = {
+    Enabled = false,
+    MobileEnabled = false,
+    HoldMouse2 = false,
+    WallCheck = false,
+    TeamCheck = false,
+    Sticky = false,
+    TargetPart = "Head",
+    Smoothness = 0.18,
+    FOV = 180,
+    FOVEnabled = false,
+    Prediction = 0.08,
+    MaxDistance = 2000,
+    Target = nil,
+    Connection = nil
+}
+
+local UtilityState = {
+    NoclipConnection = nil,
+    SavedLighting = nil,
+    FullBrightActive = false
+}
+
+local function MakeDraggable(obj)
+    local dragging, dragStart, startPos
+    obj.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = obj.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            obj.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    obj.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+
+-- ============================================================================
+-- SYNAX HUB INTEGRATED SYSTEMS
+-- Farm / Auto Hunger / Fishing / Mobile HUD support
+-- ============================================================================
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local VirtualUser = game:GetService("VirtualUser")
+local Workspace = workspace
+
+local function findToolEvent()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local toolFolder = remotes and remotes:FindFirstChild("Tool")
+    local event = toolFolder and toolFolder:FindFirstChild("Event")
+    if event and event:IsA("RemoteEvent") then
+        return event
+    end
+
+    -- Fallback: locate the same Tool/Event remote even if the hierarchy was renamed/moved.
+    for _, inst in ipairs(ReplicatedStorage:GetDescendants()) do
+        if inst:IsA("RemoteEvent") then
+            local n = string.lower(inst.Name)
+            local parentName = inst.Parent and string.lower(inst.Parent.Name) or ""
+            if n == "event" and (parentName == "tool" or parentName:find("tool")) then
+                return inst
+            end
+            if n:find("tool") and (n:find("event") or n:find("remote")) then
+                return inst
+            end
+        end
+    end
+
+    return nil
+end
+
+-- Proxy keeps the rest of the script working without blocking the UI if the remote is missing.
+local ToolEvent = {}
+function ToolEvent:FireServer(...)
+    local event = findToolEvent()
+    if event then
+        return event:FireServer(...)
+    end
+end
+local FOOD_TOOLS = { CerealBar = true, FoodPlate = true, Popcorn = true }
+local DRINK_TOOLS = { WaterCup = true, Soda = true, BloxyCola = true }
+
+local AutoHungerState = {
+    Enabled = false,
+    EatBelow = 50,
+    DrinkBelow = 50
+}
+local RunningAutoHunger = true
+local vendingMachines = {}
+local AutoEatStatusLabel = "Idle"
+
+local function getCharacterHunger()
+    local char = LocalPlayer.Character
+    if not char or not char.Parent then return nil, nil end
+    return char, char:FindFirstChildOfClass("Humanoid")
+end
+
+local function findAutoEatTool(names)
+    local char = LocalPlayer.Character
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if t:IsA("Tool") and names[t.Name] then
+                return t
+            end
+        end
+    end
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, t in ipairs(backpack:GetChildren()) do
+            if t:IsA("Tool") and names[t.Name] then
+                return t
+            end
+        end
+    end
+
+    return nil
+end
+
+local function stowLeftover(names)
+    local char, humanoid = getCharacterHunger()
+    if not humanoid then return end
+
+    local equipped = char:FindFirstChildOfClass("Tool")
+    if equipped and names[equipped.Name] then
+        pcall(function()
+            humanoid:UnequipTools()
+        end)
+    end
+end
+
+local function collectVendingMachines()
+    local list = {}
+
+    for _, inst in ipairs(Workspace:GetDescendants()) do
+        if inst:IsA("RemoteEvent") and inst.Parent and inst.Parent:IsA("Configuration") then
+            local text = tostring(inst.Parent:GetAttribute("Text") or "")
+
+            if text:find("Buy Food") or text:find("Buy Drink") then
+                local machine = inst:FindFirstAncestorOfClass("Model")
+
+                if machine then
+                    table.insert(list, {
+                        event = inst,
+                        kind = text:find("Food") and "Food" or "Drink",
+                        model = machine,
+                        price = tonumber(text:match("%$(%d+)")) or 3
+                    })
+                end
+            end
+        end
+    end
+
+    return list
+end
+
+local function getNearestMachine(kind)
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local best, bestDist = nil, math.huge
+
+    for _, m in ipairs(vendingMachines) do
+        if m.kind == kind and m.event and m.event.Parent and m.model and m.model.Parent then
+            local ok, pos = pcall(function()
+                return m.model:GetPivot().Position
+            end)
+
+            if ok and pos then
+                local d = root and (pos - root.Position).Magnitude or 0
+                if d < bestDist then
+                    best, bestDist = m, d
+                end
+            end
+        end
+    end
+
+    return best, bestDist
+end
+
+local function consumeAutoHunger(kind, toolNames, statName, thresholdOf)
+    local actions, misses = 0, 0
+
+    while RunningAutoHunger and AutoHungerState.Enabled and actions < 50 and misses < 3 do
+        local threshold = thresholdOf()
+        local stat = LocalPlayer:GetAttribute(statName)
+
+        if not stat or stat >= threshold then
+            break
+        end
+
+        local tool = findAutoEatTool(toolNames)
+
+        if not tool then
+            local machineKind = (kind == "Eat") and "Food" or "Drink"
+            local nearest = getNearestMachine(machineKind)
+
+            if not nearest then
+                vendingMachines = collectVendingMachines()
+                nearest = getNearestMachine(machineKind)
+            end
+
+            if not nearest then
+                AutoEatStatusLabel = "No vending machine found"
+                break
+            end
+
+            if (LocalPlayer:GetAttribute("Money") or 0) < nearest.price then
+                AutoEatStatusLabel = "Not enough money"
+                break
+            end
+
+            AutoEatStatusLabel = "Buying from far away..."
+            pcall(function()
+                nearest.event:FireServer()
+            end)
+
+            local t0 = os.clock()
+            repeat
+                task.wait(0.15)
+                tool = findAutoEatTool(toolNames)
+            until tool or os.clock() - t0 > 3
+
+            if not tool then
+                misses += 1
+                task.wait(1)
+                continue
+            end
+        end
+
+        local _, humanoid = getCharacterHunger()
+        if not humanoid then break end
+
+        if tool.Parent == LocalPlayer.Backpack then
+            pcall(function()
+                humanoid:EquipTool(tool)
+            end)
+
+            local t0 = os.clock()
+            while RunningAutoHunger and AutoHungerState.Enabled
+                and tool.Parent == LocalPlayer.Backpack
+                and os.clock() - t0 < 2 do
+                task.wait(0.1)
+            end
+
+            task.wait(0.3)
+        end
+
+        if not tool.Parent then
+            actions += 1
+            continue
+        end
+
+        local t0 = os.clock()
+        while RunningAutoHunger and AutoHungerState.Enabled
+            and tool.Parent and tool:GetAttribute("OnCooldown")
+            and os.clock() - t0 < 6 do
+            task.wait(0.15)
+        end
+
+        if not RunningAutoHunger or not AutoHungerState.Enabled or not tool.Parent then
+            actions += 1
+            continue
+        end
+
+        local before = LocalPlayer:GetAttribute(statName) or 0
+
+        pcall(function()
+            ToolEvent:FireServer(kind, tool)
+        end)
+
+        AutoEatStatusLabel = (kind == "Eat") and "Eating..." or "Drinking..."
+        actions += 1
+
+        local t1 = os.clock()
+        while RunningAutoHunger and AutoHungerState.Enabled and os.clock() - t1 < 4 do
+            if not tool.Parent then break end
+            if (LocalPlayer:GetAttribute(statName) or 0) ~= before then break end
+            task.wait(0.1)
+        end
+
+        if (LocalPlayer:GetAttribute(statName) or 0) ~= before then
+            misses = 0
+        else
+            misses += 1
+        end
+
+        task.wait(0.5)
+    end
+
+    stowLeftover(toolNames)
+
+    if AutoHungerState.Enabled then
+        AutoEatStatusLabel = "Idle"
+    end
+end
+
+task.spawn(function()
+    while RunningAutoHunger do
+        task.wait(1)
+
+        if AutoHungerState.Enabled then
+            pcall(function()
+                local hunger = LocalPlayer:GetAttribute("Hunger")
+                local thirst = LocalPlayer:GetAttribute("Thirst")
+
+                if hunger and hunger < AutoHungerState.EatBelow then
+                    consumeAutoHunger(
+                        "Eat",
+                        FOOD_TOOLS,
+                        "Hunger",
+                        function()
+                            return AutoHungerState.EatBelow
+                        end
+                    )
+                end
+
+                if thirst and thirst < AutoHungerState.DrinkBelow then
+                    consumeAutoHunger(
+                        "Drink",
+                        DRINK_TOOLS,
+                        "Thirst",
+                        function()
+                            return AutoHungerState.DrinkBelow
+                        end
+                    )
+                end
+            end)
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- FARM SYSTEMS
+-- ---------------------------------------------------------------------------
+local TasksFolder
+local RocksFolder
+local TrashesFolder
+local JanitorFolder
+
+local function refreshFarmFolders()
+    TasksFolder = Workspace:FindFirstChild("Tasks")
+    local prisoner = TasksFolder and TasksFolder:FindFirstChild("Prisoner")
+    RocksFolder = prisoner and prisoner:FindFirstChild("Rocks")
+    TrashesFolder = prisoner and prisoner:FindFirstChild("Trashes")
+    JanitorFolder = TasksFolder and TasksFolder:FindFirstChild("Janitor")
+
+    -- Fallbacks for minor hierarchy/name changes.
+    if TasksFolder then
+        if not RocksFolder then
+            RocksFolder = TasksFolder:FindFirstChild("Rocks", true)
+        end
+        if not TrashesFolder then
+            TrashesFolder = TasksFolder:FindFirstChild("Trashes", true)
+        end
+        if not JanitorFolder then
+            JanitorFolder = TasksFolder:FindFirstChild("Janitor", true)
+        end
+    end
+
+    return TasksFolder, RocksFolder, TrashesFolder, JanitorFolder
+end
+
+refreshFarmFolders()
+
+local FarmState = {
+    AutoCook = false,
+    AutoFish = false,
+    AutoSell = false,
+    SellInterval = 20
+}
+
+local AutoMine = {
+    IsActive = false,
+    NoclipConnection = nil,
+    LockConnection = nil,
+    OriginalCollisions = {},
+    RunningThread = nil
+}
+
+local AutoTrash = {
+    IsActive = false,
+    RunningThread = nil
+}
+
+local JanitorState = {
+    AutoFarm = false,
+    CleanDelay = 0.4,
+    TpWait = 0.25,
+    HitsPerPuddle = 3,
+    PuddlesDone = 0,
+    LastPuddle = "-"
+}
+
+local function clearFarmTable(t)
+    for key in pairs(t) do
+        t[key] = nil
+    end
+end
+
+local function getCharacterParts()
+    local char = LocalPlayer.Character
+    if not char or not char.Parent then
+        return nil, nil
+    end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    if not hrp or not hum or hum.Health <= 0 then
+        return nil, nil
+    end
+
+    return char, hrp
+end
+
+local function getRootPart()
+    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return character:WaitForChild("HumanoidRootPart", 5)
+end
+
+local function getMop()
+    local char = LocalPlayer.Character
+
+    if char then
+        local equipped = char:FindFirstChild("Mop")
+        if equipped and equipped:IsA("Tool") then
+            return equipped, true
+        end
+    end
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local bagMop = backpack and backpack:FindFirstChild("Mop")
+
+    if bagMop and bagMop:IsA("Tool") then
+        return bagMop, false
+    end
+
+    return nil, false
+end
+
+local function equipMop()
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+    if not char or not backpack or not humanoid then
+        return nil
+    end
+
+    local mop = char:FindFirstChild("Mop") or backpack:FindFirstChild("Mop")
+
+    if mop then
+        pcall(function()
+            humanoid:EquipTool(mop)
+        end)
+        task.wait(0.25)
+    end
+
+    return char:FindFirstChild("Mop")
+end
+
+local function getPuddles()
+    refreshFarmFolders()
+    local list = {}
+    if not JanitorFolder then return list end
+
+    for _, child in ipairs(JanitorFolder:GetChildren()) do
+        if child:IsA("BasePart") and child.Size.Y < 0.5 then
+            table.insert(list, child)
+        end
+    end
+
+    return list
+end
+
+local function nearestPuddle(origin)
+    local best, bestDist = nil, math.huge
+
+    for _, puddle in ipairs(getPuddles()) do
+        local dist = (puddle.Position - origin).Magnitude
+
+        if dist < bestDist then
+            best, bestDist = puddle, dist
+        end
+    end
+
+    return best
+end
+
+local function teleport(cframe)
+    local _, hrp = getCharacterParts()
+    if not hrp then return false end
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.CFrame = cframe
+    return true
+end
+
+local function mopPuddle(puddle)
+    refreshFarmFolders()
+    while JanitorState.AutoFarm do
+        local char = LocalPlayer.Character
+        if not char then return false end
+
+        local mop, equipped = getMop()
+        if not mop then
+            mop = equipMop()
+            equipped = mop ~= nil
+        end
+
+        if not mop then return false end
+
+        if puddle.Parent ~= JanitorFolder then
+            return true
+        end
+
+        if not equipped then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum then return false end
+
+            pcall(function()
+                hum:EquipTool(mop)
+            end)
+            task.wait(0.4)
+            continue
+        end
+
+        if mop:GetAttribute("OnCooldown") then
+            task.wait(0.25)
+            continue
+        end
+
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+
+        if (hrp.Position - puddle.Position).Magnitude > 8 then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.CFrame = CFrame.new(puddle.Position + Vector3.new(0, 3.2, 0))
+            task.wait(JanitorState.TpWait)
+            continue
+        end
+
+        pcall(function()
+            ToolEvent:FireServer("Mop", mop, puddle)
+        end)
+
+        task.wait(JanitorState.CleanDelay)
+    end
+
+    return false
+end
+
+local function janitorFarmLoop()
+    while JanitorState.AutoFarm do
+        refreshFarmFolders()
+        if not JanitorFolder then task.wait(1) continue end
+        local char, hrp = getCharacterParts()
+
+        if not char or not hrp then
+            task.wait(1)
+            continue
+        end
+
+        local mop = getMop()
+        if not mop then
+            task.wait(1)
+            continue
+        end
+
+        local puddles = getPuddles()
+
+        table.sort(puddles, function(a, b)
+            return (a.Position - hrp.Position).Magnitude <
+                (b.Position - hrp.Position).Magnitude
+        end)
+
+        if #puddles == 0 then
+            task.wait(1)
+            continue
+        end
+
+        for _, puddle in ipairs(puddles) do
+            if not JanitorState.AutoFarm then break end
+
+            if puddle.Parent == JanitorFolder then
+                local cleaned = mopPuddle(puddle)
+
+                if cleaned or puddle.Parent ~= JanitorFolder then
+                    JanitorState.PuddlesDone += 1
+                    JanitorState.LastPuddle = puddle.Name
+                end
+            end
+        end
+
+        task.wait(0.2)
+    end
+end
+
+local function cleanNearestPuddle()
+    refreshFarmFolders()
+    if not JanitorFolder then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local mop = (char and char:FindFirstChild("Mop")) or equipMop()
+
+    if not hrp or not mop then return end
+
+    local nearest
+    local nearestDistance = math.huge
+
+    for _, puddle in ipairs(JanitorFolder:GetChildren()) do
+        if puddle:IsA("BasePart") then
+            local distance = (puddle.Position - hrp.Position).Magnitude
+
+            if distance < nearestDistance then
+                nearestDistance = distance
+                nearest = puddle
+            end
+        end
+    end
+
+    if not nearest then return end
+
+    hrp.CFrame = CFrame.new(nearest.Position + Vector3.new(0, 3.5, 0))
+    task.wait(JanitorState.TpWait)
+
+    for _ = 1, JanitorState.HitsPerPuddle do
+        if not nearest.Parent then break end
+
+        pcall(function()
+            ToolEvent:FireServer("Mop", mop, nearest)
+        end)
+
+        task.wait(JanitorState.CleanDelay)
+    end
+end
+
+local function teleportToJanitor()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    if hrp then
+        hrp.CFrame = CFrame.new(91.27, 13.8, -693.9)
+    end
+end
+
+local function cycleAllPuddles()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    if not hrp then return end
+
+    task.spawn(function()
+        for _, puddle in ipairs(getPuddles()) do
+            if not JanitorState.AutoFarm then
+                hrp.CFrame = CFrame.new(puddle.Position + Vector3.new(0, 3.5, 0))
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+function AutoMine.FindClosestRock()
+    refreshFarmFolders()
+    if not RocksFolder then return nil end
+    local char = LocalPlayer.Character
+    local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+
+    if not rootPart then return nil end
+
+    local closest, minDistance = nil, math.huge
+
+    for _, rock in ipairs(RocksFolder:GetChildren()) do
+        if rock:IsA("BasePart") then
+            local health = rock:GetAttribute("Health")
+            local destroyed = rock:GetAttribute("Destroyed")
+
+            if health and health > 0 and not destroyed then
+                local distance = (rock.Position - rootPart.Position).Magnitude
+
+                if distance < minDistance then
+                    minDistance = distance
+                    closest = rock
+                end
+            end
+        end
+    end
+
+    return closest
+end
+
+function AutoMine.IsRockDead(rock)
+    if not rock or not rock.Parent then return true end
+
+    local health = rock:GetAttribute("Health")
+    local destroyed = rock:GetAttribute("Destroyed")
+
+    return (health and health <= 0) or destroyed == true
+end
+
+function AutoMine.Start()
+    if AutoMine.IsActive then return end
+
+    AutoMine.IsActive = true
+    clearFarmTable(AutoMine.OriginalCollisions)
+
+    AutoMine.NoclipConnection = RunService.Stepped:Connect(function()
+        if not AutoMine.IsActive then return end
+
+        local char = LocalPlayer.Character
+        if not char then return end
+
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if AutoMine.OriginalCollisions[part] == nil then
+                    AutoMine.OriginalCollisions[part] = part.CanCollide
+                end
+
+                part.CanCollide = false
+            end
+        end
+    end)
+
+    AutoMine.RunningThread = task.spawn(function()
+        while AutoMine.IsActive do
+            local char = LocalPlayer.Character
+            local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+            local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+            local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+            if not humanoid or not rootPart or not backpack then
+                task.wait(0.5)
+                continue
+            end
+
+            local targetRock = AutoMine.FindClosestRock()
+
+            if targetRock then
+                AutoMine.LockConnection = RunService.Heartbeat:Connect(function()
+                    if targetRock and targetRock.Parent and rootPart and rootPart.Parent then
+                        rootPart.CFrame = targetRock.CFrame * CFrame.new(0, 3, 0)
+                        rootPart.AssemblyLinearVelocity = Vector3.zero
+                    end
+                end)
+
+                while AutoMine.IsActive and not AutoMine.IsRockDead(targetRock) do
+                    pcall(function()
+                        local tool =
+                            char:FindFirstChild("Pickaxe") or
+                            backpack:FindFirstChild("Pickaxe") or
+                            char:FindFirstChild("PremiumPickaxe") or
+                            backpack:FindFirstChild("PremiumPickaxe")
+
+                        if tool then
+                            if tool.Parent == backpack then
+                                pcall(function()
+                                    humanoid:EquipTool(tool)
+                                end)
+                            end
+
+                            ToolEvent:FireServer("MineOres", tool, targetRock)
+                        end
+                    end)
+
+                    task.wait(0.05)
+                end
+
+                if AutoMine.LockConnection then
+                    AutoMine.LockConnection:Disconnect()
+                    AutoMine.LockConnection = nil
+                end
+            else
+                task.wait(0.5)
+            end
+
+            task.wait(0.05)
+        end
+    end)
+end
+
+function AutoMine.Stop()
+    AutoMine.IsActive = false
+    AutoMine.RunningThread = nil
+
+    if AutoMine.LockConnection then
+        AutoMine.LockConnection:Disconnect()
+        AutoMine.LockConnection = nil
+    end
+
+    if AutoMine.NoclipConnection then
+        AutoMine.NoclipConnection:Disconnect()
+        AutoMine.NoclipConnection = nil
+    end
+
+    pcall(function()
+        local char = LocalPlayer.Character
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+        if humanoid then
+            humanoid:UnequipTools()
+        end
+    end)
+
+    pcall(function()
+        local char = LocalPlayer.Character
+
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and AutoMine.OriginalCollisions[part] ~= nil then
+                    part.CanCollide = AutoMine.OriginalCollisions[part]
+                end
+            end
+        end
+
+        clearFarmTable(AutoMine.OriginalCollisions)
+    end)
+end
+
+function AutoTrash.Start()
+    if AutoTrash.IsActive then return end
+    refreshFarmFolders()
+
+    AutoTrash.IsActive = true
+
+    AutoTrash.RunningThread = task.spawn(function()
+        while AutoTrash.IsActive do
+            local char = LocalPlayer.Character
+            local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+            if char and backpack then
+                pcall(function()
+                    local rootPart = char:FindFirstChild("HumanoidRootPart")
+                    local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+                    if not rootPart or not humanoid then
+                        task.wait(0.5)
+                        return
+                    end
+
+                    -- 1) Çöp henüz elde değilse: çöp noktasına TP -> çöpü al.
+                    local trashTool =
+                        char:FindFirstChild("SmallTrash") or
+                        backpack:FindFirstChild("SmallTrash") or
+                        char:FindFirstChild("BigTrash") or
+                        backpack:FindFirstChild("BigTrash")
+
+                    if not trashTool then
+                        refreshFarmFolders()
+
+                        if TrashesFolder then
+                            local activeBin
+
+                            for _, bin in ipairs(TrashesFolder:GetChildren()) do
+                                local prompt = bin:FindFirstChild("Prompt")
+                                if prompt and prompt:GetAttribute("Enabled") == true then
+                                    activeBin = bin
+                                    break
+                                end
+                            end
+
+                            if activeBin then
+                                local prompt = activeBin:FindFirstChild("Prompt")
+                                local target = prompt and prompt.Parent
+
+                                if target then
+                                    rootPart.AssemblyLinearVelocity = Vector3.zero
+                                    rootPart.CFrame = target.CFrame * CFrame.new(0, 2, 0)
+
+                                    task.wait(0.3)
+                                    if not AutoTrash.IsActive then return end
+
+                                    local interact = prompt:FindFirstChild("Interact")
+                                    local event = interact and interact:FindFirstChild("Event")
+
+                                    if event and event:IsA("RemoteEvent") then
+                                        event:FireServer()
+                                    end
+
+                                    -- Çöpün Backpack'e/Character'a geçmesini bekle.
+                                    task.wait(0.25)
+                                end
+                            end
+                        end
+                    else
+                        -- 2) Çöp alındı: çöplüğe TP -> tam 2 saniye bekle -> 1 kez at.
+                        local map = Workspace:FindFirstChild("Map")
+                        local cells = map and map:FindFirstChild("Cells")
+                        local basement = cells and cells:FindFirstChild("Basement")
+                        local room = basement and basement:FindFirstChild("Recyclement Room")
+                        local props = room and room:FindFirstChild("Props")
+                        local opened = props and props:FindFirstChild("Opened Trash")
+                        local dumpster = opened and opened:FindFirstChild("Trash")
+
+                        if dumpster then
+                            rootPart.AssemblyLinearVelocity = Vector3.zero
+                            rootPart.CFrame = dumpster.CFrame * CFrame.new(0, 2, 0)
+
+                            -- İstenen sıra: TP -> 2 saniye bekle -> at.
+                            task.wait(2)
+                            if not AutoTrash.IsActive then return end
+
+                            if trashTool.Parent == backpack then
+                                humanoid:EquipTool(trashTool)
+                                task.wait(0.15)
+                            end
+
+                            local prompt = dumpster:FindFirstChild("Prompt")
+                            local interact = prompt and prompt:FindFirstChild("Interact")
+                            local event = interact and interact:FindFirstChild("Event")
+
+                            if event and event:IsA("RemoteEvent") then
+                                event:FireServer()
+                            end
+
+                            -- Bir sonraki döngüde yeniden çöp almaya geç.
+                            task.wait(0.15)
+                        end
+                    end
+                end)
+            else
+                task.wait(0.5)
+            end
+
+            if not AutoTrash.IsActive then break end
+            task.wait(0.1)
+        end
+    end)
+end
+
+function AutoTrash.Stop()
+    AutoTrash.IsActive = false
+    AutoTrash.RunningThread = nil
+end
+
+local function unlockFists()
+    pcall(function()
+        ReplicatedStorage:WaitForChild("Remotes")
+            :WaitForChild("Quests")
+            :WaitForChild("Pushups")
+            :WaitForChild("Function")
+            :InvokeServer("Submit", 300)
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- COOKING
+-- ---------------------------------------------------------------------------
+local farmSteps = {
+    {name = "Cut", cframe = CFrame.new(43.00, 7.54, -298.80), path = "Cut"},
+    {name = "Cook", cframe = CFrame.new(37.12, 7.54, -297.77), path = "Cook"},
+    {name = "Boil", cframe = CFrame.new(32.07, 7.54, -296.28), path = "Simmer"},
+    {name = "Combine", cframe = CFrame.new(41.81, 7.54, -294.10), path = "Assemble"},
+    {name = "To take", cframe = CFrame.new(48.75, 7.54, -296.25), path = "Take"},
+    {name = "Deposit", cframe = CFrame.new(16.09, 7.54, -314.13), path = "Deposit"}
+}
+
+local function checkStep(step)
+    local tasks = Workspace:FindFirstChild("Tasks")
+    local cook = tasks and tasks:FindFirstChild("Cook")
+    local taskObj = cook and cook:FindFirstChild(step.path)
+    local root = taskObj and taskObj:FindFirstChild("RootPart")
+    local prompt = root and root:FindFirstChild("Prompt")
+    local interact = prompt and prompt:FindFirstChild("Interact")
+    local event = interact and interact:FindFirstChild("Event")
+
+    if event and event:IsA("RemoteEvent") then
+        return event
+    end
+
+    return nil
+end
+
+task.spawn(function()
+    while true do
+        if FarmState.AutoCook then
+            for index, step in ipairs(farmSteps) do
+                if not FarmState.AutoCook then break end
+
+                local rootPart = getRootPart()
+
+                if rootPart then
+                    rootPart.CFrame = step.cframe
+                    task.wait(0.3)
+
+                    local event = checkStep(step)
+
+                    if event then
+                        pcall(function()
+                            event:FireServer()
+                        end)
+                    end
+                end
+
+                if index <= 3 then
+                    task.wait(10)
+                else
+                    task.wait(2)
+                end
+            end
+        end
+
+        task.wait(0.5)
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- FISHING
+-- ---------------------------------------------------------------------------
+local FishingSystem
+local FishingModules
+local MinigameSystem
+local PowerBarSystem
+local SoundManager
+local GUIManager
+
+local function loadFishingModules()
+    if MinigameSystem then return true end
+
+    local ok = pcall(function()
+        FishingSystem = ReplicatedStorage:WaitForChild("FishingSystem", 5)
+        if not FishingSystem then error("FishingSystem not found") end
+
+        FishingModules = FishingSystem:WaitForChild("FishingModules", 5)
+        if not FishingModules then error("FishingModules not found") end
+
+        MinigameSystem = require(FishingModules:WaitForChild("MinigameSystem"))
+        PowerBarSystem = require(FishingModules:WaitForChild("PowerBarSystem"))
+        SoundManager = require(FishingModules:WaitForChild("SoundManager"))
+        GUIManager = require(FishingModules:WaitForChild("GUIManager"))
+    end)
+
+    return ok and MinigameSystem ~= nil
+end
+
+local function getRod()
+    local character = LocalPlayer.Character
+
+    if character then
+        for _, child in ipairs(character:GetChildren()) do
+            if child:IsA("Tool") and string.find(string.lower(child.Name), "rod") then
+                return child
+            end
+        end
+    end
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if child:IsA("Tool") and string.find(string.lower(child.Name), "rod") then
+                return child
+            end
+        end
+    end
+
+    return nil
+end
+
+local function getFishingElements()
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local fishingGui = playerGui and playerGui:FindFirstChild("FishingGui")
+    local fishing = fishingGui and fishingGui:FindFirstChild("Fishing")
+    local bar = fishing and fishing:FindFirstChild("Bar")
+
+    return bar and bar:FindFirstChild("PlayerZone"),
+        bar and bar:FindFirstChild("FishMarker")
+end
+
+local function mouseDown()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+    end)
+end
+
+local function mouseUp()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    end)
+end
+
+local function castRod()
+    if not loadFishingModules() then return end
+
+    if PowerBarSystem:IsCharging() then
+        mouseUp()
+        task.wait(0.15)
+    end
+
+    mouseDown()
+
+    local start = os.clock()
+
+    while os.clock() - start < 1 do
+        RunService.Heartbeat:Wait()
+
+        if PowerBarSystem:IsCharging() then
+            break
+        end
+    end
+
+    while os.clock() - start < 5 do
+        RunService.Heartbeat:Wait()
+
+        if PowerBarSystem:GetCurrentPower() >= 99.5 then
+            break
+        end
+
+        if not PowerBarSystem:IsCharging() and os.clock() - start > 0.5 then
+            break
+        end
+    end
+
+    mouseUp()
+end
+
+local lastClick = 0
+
+RunService.Heartbeat:Connect(function()
+    if not FarmState.AutoFish then return end
+    if not loadFishingModules() then return end
+    if not MinigameSystem:IsActive() then return end
+
+    pcall(function()
+        local phase = MinigameSystem:GetPhase()
+
+        if phase == "shake" then
+            if os.clock() - lastClick > 0.04 then
+                MinigameSystem:HandleClick(SoundManager, GUIManager)
+                lastClick = os.clock()
+            end
+
+        elseif phase == "reel" then
+            local zone, marker = getFishingElements()
+
+            if zone and marker then
+                local zonePos = zone.Position.X.Scale
+                local fishPos = marker.Position.X.Scale
+
+                if fishPos > zonePos + 0.01 then
+                    MinigameSystem:SetHolding(true)
+                else
+                    MinigameSystem:SetHolding(false)
+                end
+            end
+        end
+    end)
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+
+        if not FarmState.AutoFish then
+            continue
+        end
+
+        pcall(function()
+            if not loadFishingModules() then
+                task.wait(1)
+                return
+            end
+
+            if MinigameSystem:IsActive() then
+                while MinigameSystem:IsActive() and FarmState.AutoFish do
+                    task.wait(0.1)
+                end
+
+                task.wait(0.5)
+            end
+
+            if not FarmState.AutoFish then return end
+
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+            if not character or not humanoid or humanoid.Health <= 0 then
+                task.wait(1)
+                return
+            end
+
+            local rod = getRod()
+
+            if not rod then
+                task.wait(1)
+                return
+            end
+
+            -- Equip the rod first. Some PrisonRP tool handlers reject EquipTool
+            -- while movement is forcibly locked, so movement is frozen only after
+            -- the rod is confirmed inside Character.
+            if rod.Parent ~= character then
+                pcall(function() humanoid:UnequipTools() end)
+                task.wait(0.1)
+
+                for _ = 1, 5 do
+                    if rod.Parent == character then break end
+                    if rod.Parent == LocalPlayer.Backpack then
+                        pcall(function() humanoid:EquipTool(rod) end)
+                    end
+                    task.wait(0.2)
+                end
+
+                if rod.Parent ~= character and rod.Parent == LocalPlayer.Backpack then
+                    pcall(function() rod.Parent = character end)
+                    task.wait(0.2)
+                    pcall(function() humanoid:EquipTool(rod) end)
+                    task.wait(0.2)
+                end
+            end
+
+            if rod.Parent ~= character then
+                task.wait(1)
+                return
+            end
+
+            humanoid.WalkSpeed = 0
+            pcall(function() humanoid.JumpPower = 0 end)
+            pcall(function() humanoid.JumpHeight = 0 end)
+
+            castRod()
+        end)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(FarmState.SellInterval)
+
+        if FarmState.AutoSell then
+            pcall(function()
+                if not FishingSystem then
+                    FishingSystem = ReplicatedStorage:FindFirstChild("FishingSystem")
+                end
+
+                local inventoryEvents = FishingSystem and FishingSystem:FindFirstChild("InventoryEvents")
+                local sellAll = inventoryEvents and inventoryEvents:FindFirstChild("Inventory_SellAll")
+
+                if sellAll and sellAll:IsA("RemoteFunction") then
+                    sellAll:InvokeServer()
+                end
+            end)
+        end
+    end
+end)
+
+-- ============================================================================
+-- LIVE BAN / LIVE ANNOUNCEMENT / LIVE USERS
+-- Uses the existing Access API endpoints. Polls every 5 seconds.
+-- ============================================================================
+local LIVE_SYNC_INTERVAL = 5
+local HEARTBEAT_INTERVAL = 30
+local lastAnnouncementId = nil
+local liveSyncStarted = false
+
+local function getJsonBody(response)
+    if type(response) ~= "table" then return nil end
+    local body = response.Body or response.body
+    if not body then return nil end
+    local ok, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    if not ok or type(data) ~= "table" then return nil end
+    return data
+end
+
+local function showLiveAnnouncement(message, createdBy)
+    if type(message) ~= "string" or message == "" then return end
+
+    local old = CoreGui:FindFirstChild("C11SynaxLiveAnnouncement")
+    if old then old:Destroy() end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "C11SynaxLiveAnnouncement"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999998
+    gui.Parent = CoreGui
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 390, 0, 110)
+    frame.Position = UDim2.new(1, 410, 0, 70)
+    frame.BackgroundColor3 = Config.BgColor
+    frame.BackgroundTransparency = 0.05
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+    local stroke = Instance.new("UIStroke", frame)
+    stroke.Color = Config.HighlightText
+    stroke.Transparency = 0.2
+    stroke.Thickness = 1.5
+
+    local title = Instance.new("TextLabel", frame)
+    title.Size = UDim2.new(1, -28, 0, 22)
+    title.Position = UDim2.fromOffset(14, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "📢  C11 SYNAX • LIVE ANNOUNCEMENT"
+    title.TextColor3 = Config.HighlightText
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 11
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local body = Instance.new("TextLabel", frame)
+    body.Size = UDim2.new(1, -28, 0, 52)
+    body.Position = UDim2.fromOffset(14, 34)
+    body.BackgroundTransparency = 1
+    body.Text = message
+    body.TextColor3 = Config.TextPrimary
+    body.Font = Enum.Font.GothamMedium
+    body.TextSize = 10
+    body.TextWrapped = true
+    body.TextXAlignment = Enum.TextXAlignment.Left
+    body.TextYAlignment = Enum.TextYAlignment.Top
+
+    local by = Instance.new("TextLabel", frame)
+    by.Size = UDim2.new(1, -28, 0, 15)
+    by.Position = UDim2.fromOffset(14, 88)
+    by.BackgroundTransparency = 1
+    by.Text = "By " .. tostring(createdBy or "C11 Synax")
+    by.TextColor3 = Config.TextSecondary
+    by.Font = Enum.Font.Gotham
+    by.TextSize = 8
+    by.TextXAlignment = Enum.TextXAlignment.Left
+
+    TweenService:Create(frame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.new(1, -405, 0, 70)
+    }):Play()
+
+    task.delay(8, function()
+        if frame and frame.Parent then
+            local tween = TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                Position = UDim2.new(1, 410, 0, 70)
+            })
+            tween:Play()
+            tween.Completed:Connect(function()
+                if gui and gui.Parent then gui:Destroy() end
+            end)
+        end
+    end)
+end
+
+local function postHeartbeat()
+    local req = getRequestFunction()
+    if not req then return end
+
+    local started = rawget(_G, "C11SynaxSessionStartedAt") or os.time()
+    _G.C11SynaxSessionStartedAt = started
+    local minutes = math.max(0, math.floor((os.time() - started) / 60))
+
+    local payload = {
+        guildId = C11_ACCESS_GUILD_ID,
+        userId = tostring(LocalPlayer.UserId),
+        username = tostring(LocalPlayer.Name),
+        placeId = tostring(game.PlaceId),
+        jobId = tostring(game.JobId or ""),
+        playTime = tostring(minutes) .. "m"
+    }
+
+    pcall(function()
+        req({
+            Url = C11_ACCESS_API_URL .. "/api/heartbeat",
+            Method = "POST",
+            Headers = {
+                ["x-api-key"] = C11_ACCESS_API_KEY,
+                ["Content-Type"] = "application/json"
+            },
+            Body = game:GetService("HttpService"):JSONEncode(payload)
+        })
+    end)
+end
+
+local function pollLiveSystems(MainGui)
+    local req = getRequestFunction()
+    if not req then return end
+
+    local ok, response = pcall(function()
+        return req({
+            Url = C11_ACCESS_API_URL .. "/api/access/" .. C11_ACCESS_GUILD_ID .. "/" .. tostring(LocalPlayer.UserId),
+            Method = "GET",
+            Headers = {
+                ["x-api-key"] = C11_ACCESS_API_KEY,
+                ["Content-Type"] = "application/json"
+            }
+        })
+    end)
+
+    if ok then
+        local data = getJsonBody(response)
+        if data and data.allowed == false then
+            C11AccessState.Allowed = false
+            C11AccessState.Reason = data.reason or data.message or "Blacklisted"
+            C11AccessState.ExpiresAt = data.expiresAt or data.expires_at
+            C11AccessState.CheckedAt = os.time()
+            C11AccessState.APIOnline = true
+            if LiveBanStatus then LiveBanStatus.Text = "RESTRICTION DETECTED" end
+
+            if MainGui and MainGui.Parent then
+                MainGui:Destroy()
+            end
+
+            showRestrictionUI(C11AccessState.Reason, C11AccessState.ExpiresAt, true)
+            return false
+        elseif data and data.allowed == true then
+            C11AccessState.Allowed = true
+            C11AccessState.CheckedAt = os.time()
+            C11AccessState.APIOnline = true
+            if LiveBanStatus then LiveBanStatus.Text = "AUTHORIZED • LIVE MONITORING" end
+        end
+    end
+
+    local announcementOk, announcementResponse = pcall(function()
+        return req({
+            Url = C11_ACCESS_API_URL .. "/api/announcements/latest",
+            Method = "GET",
+            Headers = {
+                ["x-api-key"] = C11_ACCESS_API_KEY,
+                ["Content-Type"] = "application/json"
+            }
+        })
+    end)
+
+    if announcementOk then
+        local data = getJsonBody(announcementResponse)
+        if data and data.active == true and data.id then
+            local numericId = tonumber(data.id)
+            if numericId and (lastAnnouncementId == nil or numericId > lastAnnouncementId) then
+                lastAnnouncementId = numericId
+                if LiveAnnouncementStatus then LiveAnnouncementStatus.Text = "NEW ANNOUNCEMENT" end
+                showLiveAnnouncement(data.message, data.createdBy)
+            end
+        end
+    end
+
+    return true
+end
+
+local function startLiveSystems(MainGui)
+    if liveSyncStarted then return end
+    liveSyncStarted = true
+
+    -- Prevent old announcements from immediately replaying when the script starts.
+    task.spawn(function()
+        local req = getRequestFunction()
+        if req then
+            pcall(function()
+                local response = req({
+                    Url = C11_ACCESS_API_URL .. "/api/announcements/latest",
+                    Method = "GET",
+                    Headers = {
+                        ["x-api-key"] = C11_ACCESS_API_KEY,
+                        ["Content-Type"] = "application/json"
+                    }
+                })
+                local data = getJsonBody(response)
+                if data and data.active and data.id then
+                    lastAnnouncementId = tonumber(data.id)
+                end
+            end)
+        end
+
+        while MainGui and MainGui.Parent do
+            task.wait(LIVE_SYNC_INTERVAL)
+            if not pollLiveSystems(MainGui) then break end
+        end
+    end)
+
+    task.spawn(function()
+        while MainGui and MainGui.Parent do
+            postHeartbeat()
+            task.wait(HEARTBEAT_INTERVAL)
+        end
+    end)
+end
+
+local function ExecuteScript()
+    liveSyncStarted = false
+    if CoreGui:FindFirstChild("SynaxHub") then
+        CoreGui:FindFirstChild("SynaxHub"):Destroy()
+    end
+
+    local MainGui = Instance.new("ScreenGui")
+    MainGui.Name = "SynaxHub"
+    MainGui.Parent = CoreGui
+
+    startLiveSystems(MainGui)
+
+    -- ==========================================
+    -- SECURITY NOTIFICATION
+    -- ==========================================
+    local NotifFrame = Instance.new("Frame", MainGui)
+    NotifFrame.Size = UDim2.new(0, 360, 0, 85)
+    NotifFrame.Position = UDim2.new(1, 380, 1, -95)
+    NotifFrame.BackgroundColor3 = Config.BgColor
+    NotifFrame.BackgroundTransparency = 0.1
+    NotifFrame.BorderSizePixel = 0
+    Instance.new("UICorner", NotifFrame).CornerRadius = UDim.new(0, 8)
+
+    local NotifStroke = Instance.new("UIStroke", NotifFrame)
+    NotifStroke.Color = Config.WarningYellow
+    NotifStroke.Transparency = 0.2
+    NotifStroke.Thickness = 1.5
+
+    local AccentLine = Instance.new("Frame", NotifFrame)
+    AccentLine.Size = UDim2.new(0, 4, 1, -12)
+    AccentLine.Position = UDim2.new(0, 6, 0, 6)
+    AccentLine.BackgroundColor3 = Config.WarningYellow
+    AccentLine.BorderSizePixel = 0
+    Instance.new("UICorner", AccentLine).CornerRadius = UDim.new(1, 0)
+
+    local NotifTitle = Instance.new("TextLabel", NotifFrame)
+    NotifTitle.Size = UDim2.new(1, -25, 0, 20)
+    NotifTitle.Position = UDim2.new(0, 20, 0, 8)
+    NotifTitle.BackgroundTransparency = 1
+    NotifTitle.Text = "Synax Hub Security Notice"
+    NotifTitle.TextColor3 = Config.WarningYellow
+    NotifTitle.Font = Enum.Font.GothamBold
+    NotifTitle.TextSize = 11
+    NotifTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local NotifDesc = Instance.new("TextLabel", NotifFrame)
+    NotifDesc.Size = UDim2.new(1, -25, 0, 45)
+    NotifDesc.Position = UDim2.new(0, 20, 0, 28)
+    NotifDesc.BackgroundTransparency = 1
+    NotifDesc.Text = LocalPlayer.DisplayName .. ", hello, everything you do in this script is your responsibility. Please choose an empty server while farming. Have a good game"
+    NotifDesc.TextColor3 = Config.TextSecondary
+    NotifDesc.Font = Enum.Font.Gotham
+    NotifDesc.TextSize = 9.5
+    NotifDesc.TextWrapped = true
+    NotifDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+    TweenService:Create(NotifFrame, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = UDim2.new(1, -375, 1, -95)
+    }):Play()
+
+    task.delay(5, function()
+        if NotifFrame and NotifFrame.Parent then
+            local outTween = TweenService:Create(NotifFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                Position = UDim2.new(1, 380, 1, -95)
+            })
+            outTween:Play()
+            outTween.Completed:Connect(function()
+                NotifFrame:Destroy()
+            end)
+        end
+    end)
+    local TopPill = Instance.new("TextButton", MainGui)
+    TopPill.Name = "TopPill"
+    TopPill.Size = UDim2.new(0, 150, 0, 32)
+    TopPill.Position = UDim2.new(0.5, 0, 0, 10)
+    TopPill.AnchorPoint = Vector2.new(0.5, 0)
+    TopPill.BackgroundColor3 = Config.BgColor
+    TopPill.BackgroundTransparency = 0.15
+    TopPill.Text = "[ Synax Hub ]"
+    TopPill.TextColor3 = Config.TextPrimary
+    TopPill.Font = Enum.Font.GothamBold
+    TopPill.TextSize = 13
+    TopPill.Visible = false
+    Instance.new("UICorner", TopPill).CornerRadius = UDim.new(0, 8)
+
+    local PillStroke = Instance.new("UIStroke", TopPill)
+    PillStroke.Color = Color3.fromRGB(255, 255, 255)
+    PillStroke.Transparency = 0.85
+    PillStroke.Thickness = 1
+
+    local MainFrame = Instance.new("Frame", MainGui)
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 0, 0, 0)
+    MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    MainFrame.BackgroundColor3 = Config.BgColor
+    MainFrame.BackgroundTransparency = 0.12
+    MainFrame.BorderSizePixel = 0
+    MainFrame.ClipsDescendants = true
+    MainFrame.Visible = true
+    Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+    local MainStroke = Instance.new("UIStroke", MainFrame)
+    MainStroke.Color = Color3.fromRGB(255, 255, 255)
+    MainStroke.Transparency = 0.88
+    MainStroke.Thickness = 1
+
+    local TopBar = Instance.new("Frame", MainFrame)
+    TopBar.Size = UDim2.new(1, 0, 0, 38)
+    TopBar.BackgroundTransparency = 1
+
+    local Title = Instance.new("TextLabel", TopBar)
+    Title.Text = "Synax Hub"
+    Title.Size = UDim2.new(0, 200, 1, 0)
+    Title.Position = UDim2.new(0, 15, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.TextColor3 = Config.TextPrimary
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 14
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local CloseBtn = Instance.new("TextButton", TopBar)
+    CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -35, 0, 4)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Text = "×"
+    CloseBtn.TextColor3 = Config.CloseRed
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.TextSize = 22
+
+    local MinimizeBtn = Instance.new("TextButton", TopBar)
+    MinimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+    MinimizeBtn.Position = UDim2.new(1, -65, 0, 4)
+    MinimizeBtn.BackgroundTransparency = 1
+    MinimizeBtn.Text = "-"
+    MinimizeBtn.TextColor3 = Config.TextSecondary
+    MinimizeBtn.Font = Enum.Font.GothamBold
+    MinimizeBtn.TextSize = 20
+
+    local Sidebar = Instance.new("Frame", MainFrame)
+    Sidebar.Size = UDim2.new(0, 140, 1, -48)
+    Sidebar.Position = UDim2.new(0, 10, 0, 38)
+    Sidebar.BackgroundColor3 = Config.SidebarColor
+    Sidebar.BackgroundTransparency = 0.25
+    Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 8)
+
+    local TabContainer = Instance.new("ScrollingFrame", Sidebar)
+    TabContainer.Size = UDim2.new(1, -6, 1, -52)
+    TabContainer.Position = UDim2.new(0, 3, 0, 5)
+    TabContainer.BackgroundTransparency = 1
+    TabContainer.ScrollBarThickness = 0
+    TabContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    TabContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+    local TabList = Instance.new("UIListLayout", TabContainer)
+    TabList.SortOrder = Enum.SortOrder.LayoutOrder
+    TabList.Padding = UDim.new(0, 4)
+
+    local PagesContainer = Instance.new("Frame", MainFrame)
+    PagesContainer.Size = UDim2.new(1, -170, 1, -48)
+    PagesContainer.Position = UDim2.new(0, 160, 0, 38)
+    PagesContainer.BackgroundTransparency = 1
+
+    local ProfileFrame = Instance.new("Frame", Sidebar)
+    ProfileFrame.Size = UDim2.new(1, -10, 0, 40)
+    ProfileFrame.Position = UDim2.new(0, 5, 1, -45)
+    ProfileFrame.BackgroundColor3 = Config.ContainerColor
+    ProfileFrame.BackgroundTransparency = 0.2
+    Instance.new("UICorner", ProfileFrame).CornerRadius = UDim.new(0, 6)
+
+    local ProfileImage = Instance.new("ImageLabel", ProfileFrame)
+    ProfileImage.Size = UDim2.new(0, 26, 0, 26)
+    ProfileImage.Position = UDim2.new(0, 5, 0.5, -13)
+    ProfileImage.BackgroundColor3 = Config.SidebarColor
+    ProfileImage.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=150&h=150"
+    Instance.new("UICorner", ProfileImage).CornerRadius = UDim.new(1, 0)
+
+    local ProfileName = Instance.new("TextLabel", ProfileFrame)
+    ProfileName.Size = UDim2.new(1, -38, 0, 14)
+    ProfileName.Position = UDim2.new(0, 36, 0, 4)
+    ProfileName.BackgroundTransparency = 1
+    ProfileName.Text = LocalPlayer.DisplayName
+    ProfileName.TextColor3 = Config.TextPrimary
+    ProfileName.Font = Enum.Font.GothamBold
+    ProfileName.TextSize = 10
+    ProfileName.TextXAlignment = Enum.TextXAlignment.Left
+
+    local SessionTime = Instance.new("TextLabel", ProfileFrame)
+    SessionTime.Size = UDim2.new(1, -38, 0, 12)
+    SessionTime.Position = UDim2.new(0, 36, 0, 18)
+    SessionTime.BackgroundTransparency = 1
+    SessionTime.Text = "Session: 0s"
+    SessionTime.TextColor3 = Config.TextSecondary
+    SessionTime.Font = Enum.Font.Gotham
+    SessionTime.TextSize = 9
+    SessionTime.TextXAlignment = Enum.TextXAlignment.Left
+
+    local startTime = os.time()
+    task.spawn(function()
+        while MainGui.Parent and task.wait(1) do
+            local elapsed = os.time() - startTime
+            SessionTime.Text = "Session: " .. elapsed .. "s"
+        end
+    end)
+
+    MainFrame.Size = UDim2.new(0, 100, 0, 60)
+    TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = Config.WindowSize
+    }):Play()
+
+    local function OpenMainUI()
+        MainFrame.Visible = true
+        TopPill.Visible = false
+        MainFrame.Size = UDim2.new(0, 100, 0, 60)
+        TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = Config.WindowSize
+        }):Play()
+    end
+
+    local function CloseUI()
+        local anim = TweenService:Create(MainFrame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0)
+        })
+        anim:Play()
+        anim.Completed:Connect(function()
+            MainFrame.Visible = false
+            TopPill.Visible = true
+        end)
+    end
+
+    TopPill.MouseButton1Click:Connect(OpenMainUI)
+    MinimizeBtn.MouseButton1Click:Connect(CloseUI)
+
+    CloseBtn.MouseButton1Click:Connect(function()
+        local anim = TweenService:Create(MainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0)
+        })
+        anim:Play()
+        anim.Completed:Connect(function()
+            for _, data in pairs(ActiveDrawings) do
+                if data.Box then data.Box:Remove() end
+                if data.Bones then
+                    for _, line in pairs(data.Bones) do line:Remove() end
+                end
+            end
+            if AutoMine then pcall(AutoMine.Stop) end
+            if AutoTrash then pcall(AutoTrash.Stop) end
+            JanitorState.AutoFarm = false
+            FarmState.AutoCook = false
+            FarmState.AutoFish = false
+            FarmState.AutoSell = false
+            AutoHungerState.Enabled = false
+            if UtilityState.NoclipConnection then
+                UtilityState.NoclipConnection:Disconnect()
+                UtilityState.NoclipConnection = nil
+            end
+            if UtilityState.SavedLighting then
+                local Lighting = game:GetService("Lighting")
+                local saved = UtilityState.SavedLighting
+                Lighting.Brightness = saved.Brightness
+                Lighting.ClockTime = saved.ClockTime
+                Lighting.GlobalShadows = saved.GlobalShadows
+                Lighting.FogEnd = saved.FogEnd
+                Lighting.ExposureCompensation = saved.ExposureCompensation
+                UtilityState.SavedLighting = nil
+            end
+            MainGui:Destroy()
+        end)
+    end)
+    local Tabs = {}
+    local Pages = {}
+
+    local function CreateTab(name, layoutOrder)
+        local TabBtn = Instance.new("TextButton", TabContainer)
+        TabBtn.Size = UDim2.new(1, 0, 0, 28)
+        TabBtn.BackgroundColor3 = (layoutOrder == 1) and Config.ContainerActive or Config.ContainerColor
+        TabBtn.BackgroundTransparency = 0.2
+        TabBtn:SetAttribute("SynaxOriginalText", name)
+        TabBtn.Text = "  " .. Translate(name)
+        TabBtn.TextColor3 = Config.TextPrimary
+        TabBtn.Font = Enum.Font.GothamMedium
+        TabBtn.TextSize = 11
+        TabBtn.TextXAlignment = Enum.TextXAlignment.Left
+        TabBtn.LayoutOrder = layoutOrder
+        Instance.new("UICorner", TabBtn).CornerRadius = UDim.new(0, 6)
+
+        local Page = Instance.new("ScrollingFrame", PagesContainer)
+        Page.Size = UDim2.new(1, 0, 1, 0)
+        Page.BackgroundTransparency = 1
+        Page.ScrollBarThickness = 2
+        Page.ScrollBarImageColor3 = Config.TextSecondary
+        Page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        Page.CanvasSize = UDim2.new(0, 0, 0, 0)
+        Page.Visible = (layoutOrder == 1)
+
+        local PageLayout = Instance.new("UIListLayout", Page)
+        PageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        PageLayout.Padding = UDim.new(0, 6)
+        PageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            Page.CanvasSize = UDim2.new(0, 0, 0, PageLayout.AbsoluteContentSize.Y + 12)
+        end)
+
+        Tabs[name] = TabBtn
+        Pages[name] = Page
+
+        TabBtn.MouseButton1Click:Connect(function()
+            for _, btn in pairs(Tabs) do
+                TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Config.ContainerColor}):Play()
+            end
+            for _, p in pairs(Pages) do
+                p.Visible = false
+            end
+            TweenService:Create(TabBtn, TweenInfo.new(0.2), {BackgroundColor3 = Config.ContainerActive}):Play()
+            Page.Visible = true
+            Page.CanvasPosition = Vector2.zero
+        end)
+
+        return Page
+    end
+
+    local function CreateButton(parent, text, callback)
+        local Btn = Instance.new("TextButton", parent)
+        Btn.Size = UDim2.new(1, -10, 0, 32)
+        Btn.BackgroundColor3 = Config.ContainerColor
+        Btn.BackgroundTransparency = 0.2
+        Btn:SetAttribute("SynaxOriginalText", text)
+        Btn.Text = Translate(text)
+        Btn.TextColor3 = Config.TextPrimary
+        Btn.Font = Enum.Font.GothamBold
+        Btn.TextSize = 11
+        Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
+
+        Btn.MouseButton1Click:Connect(function()
+            if callback then callback() end
+        end)
+        return Btn
+    end
+
+    local function CreateToggle(parent, text, defaultState, callback)
+        local ToggleFrame = Instance.new("Frame", parent)
+        ToggleFrame.Size = UDim2.new(1, -10, 0, 32)
+        ToggleFrame.BackgroundColor3 = Config.ContainerColor
+        ToggleFrame.BackgroundTransparency = 0.2
+        Instance.new("UICorner", ToggleFrame).CornerRadius = UDim.new(0, 6)
+
+        local Label = Instance.new("TextLabel", ToggleFrame)
+        Label.Size = UDim2.new(0.7, 0, 1, 0)
+        Label.Position = UDim2.new(0, 10, 0, 0)
+        Label.BackgroundTransparency = 1
+        Label:SetAttribute("SynaxOriginalText", text)
+        Label.Text = Translate(text)
+        Label.TextColor3 = Config.TextPrimary
+        Label.Font = Enum.Font.GothamMedium
+        Label.TextSize = 11
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+
+        local Indicator = Instance.new("TextButton", ToggleFrame)
+        Indicator.Size = UDim2.new(0, 36, 0, 18)
+        Indicator.Position = UDim2.new(1, -44, 0.5, -9)
+        Indicator.BackgroundColor3 = defaultState and Color3.fromRGB(60, 180, 100) or Color3.fromRGB(35, 40, 52)
+        Indicator.BorderSizePixel = 0
+        Indicator:SetAttribute("SynaxToggleIndicator", true)
+        Indicator:SetAttribute("SynaxToggleState", defaultState)
+        Indicator.Text = Translate(defaultState and "ON" or "OFF")
+        Indicator.TextColor3 = defaultState and Config.Accent or Config.TextSecondary
+        Indicator.Font = Enum.Font.GothamBold
+        Indicator.TextSize = 9
+        Indicator.AutoButtonColor = false
+        Instance.new("UICorner", Indicator).CornerRadius = UDim.new(0, 9)
+
+        local state = defaultState
+        Indicator.MouseButton1Click:Connect(function()
+            state = not state
+            if state then
+                Indicator.BackgroundColor3 = Color3.fromRGB(60, 180, 100)
+                Indicator:SetAttribute("SynaxToggleState", true)
+                Indicator.Text = Translate("ON")
+                Indicator.TextColor3 = Config.Accent
+            else
+                Indicator.BackgroundColor3 = Color3.fromRGB(35, 40, 52)
+                Indicator:SetAttribute("SynaxToggleState", false)
+                Indicator.Text = Translate("OFF")
+                Indicator.TextColor3 = Config.TextSecondary
+            end
+            if callback then callback(state) end
+        end)
+
+        return ToggleFrame
+    end
+
+    local function CreateCard(parent, titleText, initialVal)
+        local Card = Instance.new("Frame", parent)
+        Card.Size = UDim2.new(1, -10, 0, 34)
+        Card.BackgroundColor3 = Config.ContainerColor
+        Card.BackgroundTransparency = 0.2
+        Instance.new("UICorner", Card).CornerRadius = UDim.new(0, 6)
+
+        local TitleLbl = Instance.new("TextLabel", Card)
+        TitleLbl.Size = UDim2.new(0.6, 0, 1, 0)
+        TitleLbl.Position = UDim2.new(0, 10, 0, 0)
+        TitleLbl.BackgroundTransparency = 1
+        TitleLbl:SetAttribute("SynaxOriginalText", titleText)
+        TitleLbl.Text = Translate(titleText)
+        TitleLbl.TextColor3 = Config.TextSecondary
+        TitleLbl.Font = Enum.Font.GothamMedium
+        TitleLbl.TextSize = 11
+        TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        local ValLbl = Instance.new("TextLabel", Card)
+        ValLbl.Size = UDim2.new(0.4, -10, 1, 0)
+        ValLbl.Position = UDim2.new(0.6, 0, 0, 0)
+        ValLbl.BackgroundTransparency = 1
+        ValLbl.Text = initialVal
+        ValLbl.TextColor3 = Config.HighlightText
+        ValLbl.Font = Enum.Font.GothamBold
+        ValLbl.TextSize = 11
+        ValLbl.TextXAlignment = Enum.TextXAlignment.Right
+
+        return ValLbl
+    end
+
+
+    -----------------------------------------------------------------------
+    -- [ STAFF SYSTEM ]
+    -- Staff detection + local farm protection + optional local self-kick.
+    -- The protection only disconnects the local player; it does not kick
+    -- or moderate the detected staff member.
+    -----------------------------------------------------------------------
+    local StaffState = {
+        Enabled = false,
+        ESP = false,
+        Alerts = false,
+        FarmProtection = false,
+        KickOnStaffJoin = false,
+        ScanInterval = 2,
+        Online = {},
+        JoinTimes = {}
+    }
+
+    local STAFF_GROUP_ID = 304256484
+
+    local STAFF_ROLES = {
+        [774340190] = {name = "Tester", rank = 120},
+        [616437365] = {name = "Modérateur Test", rank = 200},
+        [616991309] = {name = "Modérateur Junior", rank = 201},
+        [616937284] = {name = "Modérateur", rank = 202},
+        [556964175] = {name = "Modérateur Sénior", rank = 203},
+        [619803001] = {name = "Administrateur Junior", rank = 204},
+        [617179396] = {name = "Administrateur", rank = 205},
+        [616849364] = {name = "Administrateur Sénior", rank = 206},
+        [673879028] = {name = "Administrateur d'État", rank = 207},
+        [668615019] = {name = "Responsable Staff", rank = 208},
+        [732513005] = {name = "Communication Manager", rank = 209},
+        [740501056] = {name = "Leadership Team", rank = 210},
+        [556052113] = {name = "Heni", rank = 253},
+        [556780032] = {name = "Developper", rank = 254},
+        [558880049] = {name = "Fondateur Heni", rank = 255},
+    }
+
+    local function getStaffData(player)
+        if not player or player == LocalPlayer then return nil end
+
+        local direct = STAFF_ROLES[player.UserId]
+        if direct then return direct end
+
+        local ok, role = pcall(function()
+            return player:GetRoleInGroup(STAFF_GROUP_ID)
+        end)
+
+        if not ok or not role then return nil end
+
+        for _, data in pairs(STAFF_ROLES) do
+            if role == data.name then
+                return data
+            end
+        end
+
+        return nil
+    end
+
+    local function getStaffDistance(player)
+        local myChar = LocalPlayer.Character
+        local targetChar = player.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+
+        if not myRoot or not targetRoot then return nil end
+
+        return math.floor((myRoot.Position - targetRoot.Position).Magnitude)
+    end
+
+    local function getActiveTime(player)
+        local start = StaffState.JoinTimes[player.UserId]
+        if not start then return "00:00" end
+
+        local seconds = math.max(0, math.floor(os.clock() - start))
+        return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
+    end
+
+    local function removeStaffESP(player)
+        local character = player.Character
+        if not character then return end
+
+        local highlight = character:FindFirstChild("SynaxStaffHighlight")
+        if highlight then highlight:Destroy() end
+
+        local head = character:FindFirstChild("Head")
+        if head then
+            local tag = head:FindFirstChild("SynaxStaffTag")
+            if tag then tag:Destroy() end
+        end
+    end
+
+    local function addStaffESP(player, data)
+        if not StaffState.ESP or player == LocalPlayer then return end
+
+        local character = player.Character
+        if not character then return end
+
+        local highlight = character:FindFirstChild("SynaxStaffHighlight")
+        if not highlight then
+            highlight = Instance.new("Highlight")
+            highlight.Name = "SynaxStaffHighlight"
+            highlight.FillTransparency = 0.7
+            highlight.OutlineTransparency = 0
+            highlight.FillColor = Color3.fromRGB(255, 65, 65)
+            highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            highlight.Parent = character
+        end
+
+        local head = character:FindFirstChild("Head")
+        if not head then return end
+
+        local tag = head:FindFirstChild("SynaxStaffTag")
+        if not tag then
+            tag = Instance.new("BillboardGui")
+            tag.Name = "SynaxStaffTag"
+            tag.Size = UDim2.fromOffset(175, 62)
+            tag.StudsOffset = Vector3.new(0, 3.2, 0)
+            tag.AlwaysOnTop = true
+            tag.MaxDistance = 5000
+            tag.Parent = head
+
+            local label = Instance.new("TextLabel")
+            label.Name = "StaffText"
+            label.Size = UDim2.fromScale(1, 1)
+            label.BackgroundTransparency = 1
+            label.TextColor3 = Color3.fromRGB(255, 85, 85)
+            label.TextStrokeTransparency = 0.25
+            label.TextSize = 10
+            label.Font = Enum.Font.GothamBold
+            label.TextWrapped = true
+            label.Parent = tag
+        end
+
+        local label = tag:FindFirstChild("StaffText")
+        if label then
+            local distance = getStaffDistance(player)
+            label.Text =
+                "⚠ STAFF\n" ..
+                player.DisplayName ..
+                "\n" ..
+                data.name .. " • Rank " .. tostring(data.rank) ..
+                "\n" ..
+                "Active " .. getActiveTime(player) ..
+                " • " .. (distance and tostring(distance) .. "m" or "?m")
+        end
+    end
+
+    local function stopLocalFarm()
+        if not StaffState.FarmProtection then return end
+
+        FarmState.AutoCook = false
+        FarmState.AutoFish = false
+        FarmState.AutoSell = false
+        AutoHungerState.Enabled = false
+        AutoMine.IsActive = false
+        AutoTrash.IsActive = false
+        JanitorState.AutoFarm = false
+
+        pcall(function()
+            if AutoMine.Stop then AutoMine.Stop() end
+        end)
+
+        pcall(function()
+            if AutoTrash.Stop then AutoTrash.Stop() end
+        end)
+
+        pcall(function()
+            if FishingSystem and FishingSystem.Stop then FishingSystem.Stop() end
+        end)
+    end
+
+    local function scanStaff()
+        if not StaffState.Enabled then return end
+
+        local detected = {}
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local data = getStaffData(player)
+
+                if data then
+                    if not StaffState.JoinTimes[player.UserId] then
+                        StaffState.JoinTimes[player.UserId] = os.clock()
+                    end
+
+                    table.insert(detected, {
+                        Player = player,
+                        Data = data
+                    })
+
+                    addStaffESP(player, data)
+                else
+                    removeStaffESP(player)
+                end
+            end
+        end
+
+        table.sort(detected, function(a, b)
+            return a.Data.rank > b.Data.rank
+        end)
+
+        StaffState.Online = detected
+
+        if #detected > 0 and StaffState.FarmProtection then
+            stopLocalFarm()
+        end
+
+        -- Farm Protection: optionally leave the server when a recognized
+        -- staff member is detected. This only affects the local player.
+        if #detected > 0 and StaffState.KickOnStaffJoin then
+            local first = detected[1]
+            local staffName = first and first.Player and first.Player.Name or "Unknown"
+            local staffRole = first and first.Data and first.Data.name or "Staff"
+            pcall(function()
+                LocalPlayer:Kick("Staff Join Detected: " .. staffName .. " (" .. staffRole .. ")")
+            end)
+            return
+        end
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        task.spawn(function()
+            task.wait(1)
+            scanStaff()
+        end)
+
+        player.CharacterAdded:Connect(function()
+            task.wait(1)
+            scanStaff()
+        end)
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        StaffState.JoinTimes[player.UserId] = nil
+        removeStaffESP(player)
+        task.defer(scanStaff)
+    end)
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(StaffState.ScanInterval)
+            scanStaff()
+        end
+    end)
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(0.25)
+            if StaffState.ESP then
+                for _, entry in ipairs(StaffState.Online) do
+                    if entry.Player and entry.Player.Parent then
+                        addStaffESP(entry.Player, entry.Data)
+                    end
+                end
+            end
+        end
+    end)
+
+    local DashboardPage = CreateTab("Dashboard", 1)
+    local InfoPage      = CreateTab("Information", 2)
+    local FarmPage      = CreateTab("Farm", 3)
+    local AutoEatPage   = CreateTab("Auto Eat", 4)
+    local CombatPage    = CreateTab("Combat", 5)
+    local EspPage       = CreateTab("ESP", 6)
+    local StaffPage     = CreateTab("Staff", 7)
+    local ExtraPage     = CreateTab("Extra", 8)
+    local SettingsPage  = CreateTab("Settings", 9)
+
+    -----------------------------------------------------------------------
+    -- [ STAFF TAB ]
+    -----------------------------------------------------------------------
+    local StaffTitle = Instance.new("TextLabel", StaffPage)
+    StaffTitle.Size = UDim2.new(1, -10, 0, 20)
+    StaffTitle.BackgroundTransparency = 1
+    StaffTitle.Text = "Staff Monitor"
+    StaffTitle.TextColor3 = Config.HighlightText
+    StaffTitle.Font = Enum.Font.GothamBold
+    StaffTitle.TextSize = 12
+    StaffTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local StaffCountCard = CreateCard(StaffPage, "Staff Online", "0")
+
+    local StaffList = Instance.new("TextLabel", StaffPage)
+    StaffList.Size = UDim2.new(1, -10, 0, 125)
+    StaffList.BackgroundColor3 = Config.ContainerColor
+    StaffList.BackgroundTransparency = 0.2
+    StaffList.TextColor3 = Config.TextPrimary
+    StaffList.Font = Enum.Font.Gotham
+    StaffList.TextSize = 10
+    StaffList.TextWrapped = true
+    StaffList.TextXAlignment = Enum.TextXAlignment.Left
+    StaffList.TextYAlignment = Enum.TextYAlignment.Top
+    StaffList.Text = "No staff detected."
+    StaffList.Parent = StaffPage
+    Instance.new("UICorner", StaffList).CornerRadius = UDim.new(0, 6)
+
+    local function updateStaffList()
+        local online = StaffState.Online
+        StaffCountCard.Text = tostring(#online)
+
+        if #online == 0 then
+            StaffList.Text = "No staff detected."
+            return
+        end
+
+        local output = {}
+
+        for _, entry in ipairs(online) do
+            local player = entry.Player
+            local data = entry.Data
+
+            if player and data then
+                local distance = getStaffDistance(player)
+
+                table.insert(output,
+                    "⚠ " .. player.Name ..
+                    "\n   " .. data.name .. " • Rank " .. tostring(data.rank) ..
+                    "\n   Active: " .. getActiveTime(player) ..
+                    " • Distance: " .. (distance and tostring(distance) .. "m" or "?")
+                )
+            end
+        end
+
+        StaffList.Text = table.concat(output, "\n\n")
+    end
+
+    CreateToggle(StaffPage, "Staff ESP", false, function(state)
+        StaffState.ESP = state
+
+        if not state then
+            for _, player in ipairs(Players:GetPlayers()) do
+                removeStaffESP(player)
+            end
+        else
+            scanStaff()
+        end
+    end)
+
+    CreateToggle(StaffPage, "Staff Alerts", false, function(state)
+        StaffState.Alerts = state
+    end)
+
+    CreateToggle(StaffPage, "Farm Protection", false, function(state)
+        StaffState.FarmProtection = state
+
+        if state and #StaffState.Online > 0 then
+            stopLocalFarm()
+        end
+    end)
+
+    CreateToggle(StaffPage, "Leave on Staff Join", false, function(state)
+        StaffState.KickOnStaffJoin = state
+
+        -- If staff is already detected while the option is enabled,
+        -- immediately leave instead of waiting for the next scan.
+        if state and #StaffState.Online > 0 then
+            local first = StaffState.Online[1]
+            local staffName = first and first.Player and first.Player.Name or "Unknown"
+            local staffRole = first and first.Data and first.Data.name or "Staff"
+            pcall(function()
+                LocalPlayer:Kick("Staff Join Detected: " .. staffName .. " (" .. staffRole .. ")")
+            end)
+        end
+    end)
+
+    CreateButton(StaffPage, "SCAN STAFF", function()
+        scanStaff()
+        updateStaffList()
+    end)
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(0.5)
+            updateStaffList()
+        end
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ DASHBOARD ]
+    -----------------------------------------------------------------------
+    local FpsLabel    = CreateCard(DashboardPage, "FPS Rate", "calculating...")
+    local PingLabel   = CreateCard(DashboardPage, "MS (Ping)", "calculating...")
+    local PlayerLabel = CreateCard(DashboardPage, "Server Players", "0 / 0")
+    local FriendLabel = CreateCard(DashboardPage, "Active Friends", "0")
+    local ServerHubLabel = CreateCard(DashboardPage, "Server Hub", "Loading...")
+    local ServerRegionLabel = CreateCard(DashboardPage, "Server Region", "Unavailable")
+
+    local ResetBtn = Instance.new("TextButton", DashboardPage)
+    ResetBtn.Size = UDim2.new(1, -10, 0, 34)
+    ResetBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    ResetBtn.BackgroundTransparency = 0.2
+    ResetBtn.Text = "RESET SCRIPT"
+    ResetBtn.TextColor3 = Config.Accent
+    ResetBtn.Font = Enum.Font.GothamBold
+    ResetBtn.TextSize = 11
+    Instance.new("UICorner", ResetBtn).CornerRadius = UDim.new(0, 6)
+
+    ResetBtn.MouseButton1Click:Connect(function()
+        ExecuteScript()
+    end)
+
+    local frameCount, lastTime = 0, os.clock()
+    RunService.RenderStepped:Connect(function()
+        if not MainGui.Parent then return end
+        frameCount += 1
+        local currentTime = os.clock()
+        if currentTime - lastTime >= 1 then
+            FpsLabel.Text = tostring(frameCount) .. " FPS"
+            frameCount = 0
+            lastTime = currentTime
+        end
+    end)
+
+    task.spawn(function()
+        while MainGui.Parent and task.wait(1.5) do
+            local ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+            PingLabel.Text = tostring(ping) .. " ms"
+
+            local currentPlayers = #Players:GetPlayers()
+            local maxPlayers = Players.MaxPlayers
+            PlayerLabel.Text = currentPlayers .. " / " .. maxPlayers
+
+            local friendsInServer = 0
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and LocalPlayer:IsFriendsWith(p.UserId) then
+                    friendsInServer += 1
+                end
+            end
+            FriendLabel.Text = tostring(friendsInServer)
+
+            -- Roblox does not expose the physical server region to LocalScripts.
+            ServerHubLabel.Text = "Job ID: " .. tostring(game.JobId ~= "" and game.JobId or "N/A")
+            ServerRegionLabel.Text = "Unavailable (client-side)"
+        end
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ FARM TAB ]
+    -- Functional farm systems integrated from the supplied farm scripts.
+    -----------------------------------------------------------------------
+    local FarmTitle = Instance.new("TextLabel", FarmPage)
+    FarmTitle.Size = UDim2.new(1, -10, 0, 20)
+    FarmTitle.BackgroundTransparency = 1
+    FarmTitle.Text = "Farming"
+    FarmTitle.TextColor3 = Config.HighlightText
+    FarmTitle.Font = Enum.Font.GothamBold
+    FarmTitle.TextSize = 12
+    FarmTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    CreateToggle(FarmPage, "Auto Cook", false, function(state)
+        FarmState.AutoCook = state
+    end)
+
+    CreateToggle(FarmPage, "Fish Farm", false, function(state)
+        FarmState.AutoFish = state
+
+        if not state then
+            pcall(function()
+                if MinigameSystem then
+                    MinigameSystem:SetHolding(false)
+                end
+            end)
+
+            local char = LocalPlayer.Character
+            local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+            if humanoid then
+                humanoid.WalkSpeed = 16
+                pcall(function() humanoid.JumpPower = 50 end)
+                pcall(function() humanoid.JumpHeight = 7.2 end)
+            end
+        end
+    end)
+
+    CreateToggle(FarmPage, "Auto Sell Fish", false, function(state)
+        FarmState.AutoSell = state
+    end)
+
+    CreateButton(FarmPage, "Sell All Fish Now", function()
+        pcall(function()
+            if not FishingSystem then
+                FishingSystem = ReplicatedStorage:FindFirstChild("FishingSystem")
+            end
+
+            local inventoryEvents = FishingSystem and FishingSystem:FindFirstChild("InventoryEvents")
+            local sellAll = inventoryEvents and inventoryEvents:FindFirstChild("Inventory_SellAll")
+
+            if sellAll and sellAll:IsA("RemoteFunction") then
+                sellAll:InvokeServer()
+            end
+        end)
+    end)
+
+    CreateButton(FarmPage, "Teleport to Fishing Area", function()
+        local character = LocalPlayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        local fz = Workspace:FindFirstChild("FishingZone")
+
+        if hrp and fz then
+            pcall(function()
+                hrp.CFrame = fz:GetPivot() + Vector3.new(0, 5, 0)
+            end)
+        end
+    end)
+
+    CreateToggle(FarmPage, "Auto Mine", false, function(state)
+        if state then
+            AutoMine.Start()
+        else
+            AutoMine.Stop()
+        end
+    end)
+
+    CreateToggle(FarmPage, "Auto Trash (EXP)", false, function(state)
+        if state then
+            AutoTrash.Start()
+        else
+            AutoTrash.Stop()
+        end
+    end)
+
+    CreateButton(FarmPage, "Unlock Fists", unlockFists)
+
+    local JanitorTitle = Instance.new("TextLabel", FarmPage)
+    JanitorTitle.Size = UDim2.new(1, -10, 0, 20)
+    JanitorTitle.BackgroundTransparency = 1
+    JanitorTitle.Text = "Janitor Farm"
+    JanitorTitle.TextColor3 = Config.HighlightText
+    JanitorTitle.Font = Enum.Font.GothamBold
+    JanitorTitle.TextSize = 12
+    JanitorTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local JanitorStatus = CreateCard(FarmPage, "Janitor Status", "Idle")
+    local janitorStatusLast = ""
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(0.5)
+
+            local text
+            if JanitorState.AutoFarm then
+                text = "Running | " .. JanitorState.PuddlesDone .. " | " .. JanitorState.LastPuddle
+            else
+                text = "Idle | " .. JanitorState.PuddlesDone
+            end
+
+            if text ~= janitorStatusLast then
+                JanitorStatus.Text = text
+                janitorStatusLast = text
+            end
+        end
+    end)
+
+    CreateToggle(FarmPage, "Janitor Farm", false, function(state)
+        JanitorState.AutoFarm = state
+
+        if state then
+            task.spawn(janitorFarmLoop)
+        end
+    end)
+
+    CreateButton(FarmPage, "Equip Mop", function()
+        equipMop()
+    end)
+
+    CreateButton(FarmPage, "Clean Nearest Puddle", function()
+        task.spawn(cleanNearestPuddle)
+    end)
+
+    CreateButton(FarmPage, "Teleport to Janitor Area", teleportToJanitor)
+    CreateButton(FarmPage, "Cycle Through All Puddles", cycleAllPuddles)
+
+    local function CreateFarmSlider(parent, title, minValue, maxValue, defaultValue, step, suffix, callback)
+        local holder = Instance.new("Frame", parent)
+        holder.Size = UDim2.new(1, -10, 0, 42)
+        holder.BackgroundColor3 = Config.ContainerColor
+        holder.BackgroundTransparency = 0.2
+        Instance.new("UICorner", holder).CornerRadius = UDim.new(0, 6)
+
+        local label = Instance.new("TextLabel", holder)
+        label.Size = UDim2.new(1, -20, 0, 18)
+        label.Position = UDim2.new(0, 10, 0, 2)
+        label.BackgroundTransparency = 1
+        label:SetAttribute("SynaxSliderTitle", title)
+        label:SetAttribute("SynaxSliderSuffix", suffix)
+        label:SetAttribute("SynaxSliderValue", defaultValue)
+        label.TextColor3 = Config.TextPrimary
+        label.Font = Enum.Font.GothamMedium
+        label.TextSize = 10
+        label.TextXAlignment = Enum.TextXAlignment.Left
+
+        local bar = Instance.new("TextButton", holder)
+        bar.Size = UDim2.new(1, -20, 0, 8)
+        bar.Position = UDim2.new(0, 10, 0, 27)
+        bar.BackgroundColor3 = Color3.fromRGB(35, 40, 52)
+        bar.BorderSizePixel = 0
+        bar.Text = ""
+        bar.AutoButtonColor = false
+        Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+
+        local fill = Instance.new("Frame", bar)
+        fill.BackgroundColor3 = Config.HighlightText
+        fill.BorderSizePixel = 0
+        Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+        local dragging = false
+
+        local function setValue(value)
+            value = math.clamp(value, minValue, maxValue)
+            value = math.floor((value - minValue) / step + 0.5) * step + minValue
+            value = math.clamp(value, minValue, maxValue)
+
+            local alpha = (value - minValue) / (maxValue - minValue)
+            fill.Size = UDim2.new(alpha, 0, 1, 0)
+            label:SetAttribute("SynaxSliderValue", value)
+            label.Text = Translate(title) .. ": " .. tostring(value) .. suffix
+            callback(value)
+        end
+
+        local function updateFromInput(input)
+            local alpha = math.clamp(
+                (input.Position.X - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1),
+                0,
+                1
+            )
+
+            setValue(minValue + (maxValue - minValue) * alpha)
+        end
+
+        bar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                updateFromInput(input)
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (
+                input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch
+            ) then
+                updateFromInput(input)
+            end
+        end)
+
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+
+        setValue(defaultValue)
+        return holder
+    end
+
+    CreateFarmSlider(
+        FarmPage,
+        "Hits per puddle",
+        1, 8,
+        JanitorState.HitsPerPuddle,
+        1,
+        " fires",
+        function(value)
+            JanitorState.HitsPerPuddle = value
+        end
+    )
+
+    CreateFarmSlider(
+        FarmPage,
+        "Delay between fires",
+        0, 2,
+        JanitorState.CleanDelay,
+        0.05,
+        "s",
+        function(value)
+            JanitorState.CleanDelay = value
+        end
+    )
+
+    CreateFarmSlider(
+        FarmPage,
+        "Teleport settle time",
+        0, 1,
+        JanitorState.TpWait,
+        0.05,
+        "s",
+        function(value)
+            JanitorState.TpWait = value
+        end
+    )
+
+    CreateFarmSlider(
+        FarmPage,
+        "Fish sell interval",
+        5, 120,
+        FarmState.SellInterval,
+        1,
+        "s",
+        function(value)
+            FarmState.SellInterval = value
+        end
+    )
+
+    -----------------------------------------------------------------------
+    -- [ ESP TAB ]
+    -----------------------------------------------------------------------
+    CreateToggle(EspPage, "Glow ESP (All White)", false, function(state)
+        HubSettings.GlowAllWhite = state
+    end)
+
+    local ColorContainer = Instance.new("Frame", EspPage)
+    ColorContainer.Size = UDim2.new(1, -10, 0, 36)
+    ColorContainer.BackgroundColor3 = Config.ContainerColor
+    ColorContainer.BackgroundTransparency = 0.2
+    Instance.new("UICorner", ColorContainer).CornerRadius = UDim.new(0, 6)
+
+    local ColorLbl = Instance.new("TextLabel", ColorContainer)
+    ColorLbl.Size = UDim2.new(0.5, 0, 1, 0)
+    ColorLbl.Position = UDim2.new(0, 10, 0, 0)
+    ColorLbl.BackgroundTransparency = 1
+    ColorLbl.Text = "Glow Custom Color"
+    ColorLbl.TextColor3 = Config.TextPrimary
+    ColorLbl.Font = Enum.Font.GothamMedium
+    ColorLbl.TextSize = 11
+    ColorLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local colors = {
+        {Name = "Red", Color = Color3.fromRGB(255, 50, 50)},
+        {Name = "Blue", Color = Color3.fromRGB(50, 150, 255)},
+        {Name = "Green", Color = Color3.fromRGB(50, 255, 100)},
+        {Name = "White", Color = Color3.fromRGB(255, 255, 255)}
+    }
+
+    local xOffset = -135
+    for _, col in ipairs(colors) do
+        local btn = Instance.new("TextButton", ColorContainer)
+        btn.Size = UDim2.new(0, 28, 0, 20)
+        btn.Position = UDim2.new(1, xOffset, 0.5, -10)
+        btn.BackgroundColor3 = col.Color
+        btn.Text = ""
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+        btn.MouseButton1Click:Connect(function()
+            HubSettings.GlowColor = col.Color
+        end)
+        xOffset += 33
+    end
+
+    CreateToggle(EspPage, "2D Box ESP", false, function(state)
+        HubSettings.BoxEsp = state
+    end)
+
+    CreateToggle(EspPage, "Health Bar ESP", false, function(state)
+        HubSettings.HealthBar = state
+    end)
+
+    CreateToggle(EspPage, "Target ESP (Top Lines)", false, function(state)
+        HubSettings.TargetLines = state
+    end)
+
+    CreateToggle(EspPage, "Skeleton ESP", false, function(state)
+        HubSettings.SkeletonEsp = state
+    end)
+
+    CreateToggle(EspPage, "Name & Distance ESP", false, function(state)
+        HubSettings.NameDistanceEsp = state
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ AUTO EAT / DRINK ]
+    -----------------------------------------------------------------------
+    local HungerTitle = Instance.new("TextLabel", AutoEatPage)
+    HungerTitle.Size = UDim2.new(1, -10, 0, 20)
+    HungerTitle.BackgroundTransparency = 1
+    HungerTitle.Text = "Auto Hunger System"
+    HungerTitle.TextColor3 = Config.HighlightText
+    HungerTitle.Font = Enum.Font.GothamBold
+    HungerTitle.TextSize = 12
+    HungerTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local HungerStatus = CreateCard(AutoEatPage, "Status", "Idle")
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(0.5)
+
+            local status = AutoEatStatusLabel
+            local hunger = LocalPlayer:GetAttribute("Hunger")
+            local thirst = LocalPlayer:GetAttribute("Thirst")
+
+            if hunger ~= nil or thirst ~= nil then
+                status = status .. " | H:" .. tostring(hunger or "?") ..
+                    " T:" .. tostring(thirst or "?")
+            end
+
+            HungerStatus.Text = status
+        end
+    end)
+
+    CreateToggle(AutoEatPage, "Enable Auto Eat / Drink", false, function(state)
+        AutoHungerState.Enabled = state
+
+        if not state then
+            AutoEatStatusLabel = "Idle"
+        end
+    end)
+
+    CreateFarmSlider(
+        AutoEatPage,
+        "Eat when Hunger below",
+        5, 95,
+        AutoHungerState.EatBelow,
+        1,
+        "%",
+        function(value)
+            AutoHungerState.EatBelow = value
+        end
+    )
+
+    CreateFarmSlider(
+        AutoEatPage,
+        "Drink when Thirst below",
+        5, 95,
+        AutoHungerState.DrinkBelow,
+        1,
+        "%",
+        function(value)
+            AutoHungerState.DrinkBelow = value
+        end
+    )
+
+    local HungerInfo = Instance.new("TextLabel", AutoEatPage)
+    HungerInfo.Size = UDim2.new(1, -10, 0, 55)
+    HungerInfo.BackgroundTransparency = 1
+    HungerInfo.Text = "Automatically consumes food/drinks from your inventory. " ..
+        "If none are available, it searches vending machines and attempts to purchase " ..
+        "the required item."
+    HungerInfo.TextColor3 = Config.TextSecondary
+    HungerInfo.Font = Enum.Font.Gotham
+    HungerInfo.TextSize = 10
+    HungerInfo.TextWrapped = true
+    HungerInfo.TextXAlignment = Enum.TextXAlignment.Left
+
+    -----------------------------------------------------------------------
+    -- [ EXTRA / BLACK MARKET ]
+    -----------------------------------------------------------------------
+    local BlackMarketTitle = Instance.new("TextLabel", ExtraPage)
+    BlackMarketTitle.Size = UDim2.new(1, -10, 0, 20)
+    BlackMarketTitle.BackgroundTransparency = 1
+    BlackMarketTitle.Text = "Black Market"
+    BlackMarketTitle.TextColor3 = Config.HighlightText
+    BlackMarketTitle.Font = Enum.Font.GothamBold
+    BlackMarketTitle.TextSize = 12
+    BlackMarketTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function FindBlackMarketNPC()
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
+                local nameLower = string.lower(obj.Name)
+                if string.find(nameLower, "black") and string.find(nameLower, "market") then
+                    return obj
+                end
+            end
+        end
+        return nil
+    end
+
+    local function teleportToBlackMarket()
+        local npc = FindBlackMarketNPC()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if npc and hrp then
+            local npcHRP = npc:FindFirstChild("HumanoidRootPart")
+            if npcHRP then
+                local frontPosition = npcHRP.CFrame * CFrame.new(0, 0, -3)
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.CFrame = CFrame.lookAt(frontPosition.Position, npcHRP.Position)
+            end
+        end
+    end
+
+    CreateButton(ExtraPage, "Teleport to Black Market", teleportToBlackMarket)
+
+    -----------------------------------------------------------------------
+    -- [ EXTRA / MOBILE HUD EDITOR ]
+    -----------------------------------------------------------------------
+    local ExtraTitle = Instance.new("TextLabel", ExtraPage)
+    ExtraTitle.Size = UDim2.new(1, -10, 0, 20)
+    ExtraTitle.BackgroundTransparency = 1
+    ExtraTitle.Text = "Mobile HUD Editor"
+    ExtraTitle.TextColor3 = Config.HighlightText
+    ExtraTitle.Font = Enum.Font.GothamBold
+    ExtraTitle.TextSize = 12
+    ExtraTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local SelectedButton = nil
+    local HUDEditorActive = false
+    local SavedHUDLayout = {}
+    local HUDConnections = {}
+    local HUDDragCleanup = {}
+
+    if PlayerGui:FindFirstChild("CompactHUDEditor") then
+        PlayerGui.CompactHUDEditor:Destroy()
+    end
+
+    local EditScreenGui = Instance.new("ScreenGui")
+    EditScreenGui.Name = "CompactHUDEditor"
+    EditScreenGui.ResetOnSpawn = false
+    EditScreenGui.Enabled = false
+    EditScreenGui.Parent = PlayerGui
+
+    -- Never reopen the editor automatically after respawn/role changes.
+    local HUDStateGuard = PlayerGui.ChildAdded:Connect(function(child)
+        if child ~= EditScreenGui and child.Name == "CompactHUDEditor" and not HUDEditorActive then
+            pcall(function() child:Destroy() end)
+        end
+        if not HUDEditorActive then
+            EditScreenGui.Enabled = false
+        end
+    end)
+
+    EditScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+        if not HUDEditorActive and EditScreenGui.Enabled then
+            EditScreenGui.Enabled = false
+        end
+    end)
+
+    LocalPlayer.CharacterAdded:Connect(function()
+        HUDEditorActive = false
+        EditScreenGui.Enabled = false
+        SelectedButton = nil
+        for _, conn in ipairs(HUDConnections) do
+            if conn then pcall(function() conn:Disconnect() end) end
+        end
+        HUDConnections = {}
+        for _, cleanupFunc in ipairs(HUDDragCleanup) do
+            if cleanupFunc then pcall(cleanupFunc) end
+        end
+        HUDDragCleanup = {}
+    end)
+
+    local EditFrame = Instance.new("Frame")
+    EditFrame.Size = UDim2.new(0, 160, 0, 170)
+    EditFrame.Position = UDim2.new(0.02, 0, 0.35, 0)
+    EditFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    EditFrame.BorderSizePixel = 0
+    EditFrame.Active = true
+    EditFrame.Parent = EditScreenGui
+
+    local FrameCorner = Instance.new("UICorner")
+    FrameCorner.CornerRadius = UDim.new(0, 8)
+    FrameCorner.Parent = EditFrame
+
+    local FrameStroke = Instance.new("UIStroke")
+    FrameStroke.Color = Color3.fromRGB(0, 255, 200)
+    FrameStroke.Thickness = 1.5
+    FrameStroke.Parent = EditFrame
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, 0, 0, 22)
+    TitleLabel.Text = "HUD EDITOR"
+    TitleLabel.TextColor3 = Color3.fromRGB(0, 255, 200)
+    TitleLabel.TextSize = 11
+    TitleLabel.Font = Enum.Font.SourceSansBold
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Parent = EditFrame
+
+    local SelectedLabel = Instance.new("TextLabel")
+    SelectedLabel.Size = UDim2.new(1, 0, 0, 15)
+    SelectedLabel.Position = UDim2.new(0, 0, 0, 20)
+    SelectedLabel.Text = "Selected: None"
+    SelectedLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    SelectedLabel.TextSize = 9
+    SelectedLabel.Font = Enum.Font.SourceSans
+    SelectedLabel.BackgroundTransparency = 1
+    SelectedLabel.Parent = EditFrame
+
+    local function MakeHUDElementDraggable(gui)
+        local dragging = false
+        local dragInput
+        local dragStart
+        local startPos
+        local connections = {}
+
+        local function update(input)
+            if not dragStart or not startPos then return end
+
+            local delta = input.Position - dragStart
+            gui.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+
+        local c1 = gui.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = input.Position
+                startPos = gui.Position
+
+                local endConn
+                endConn = input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                        if endConn then endConn:Disconnect() end
+                    end
+                end)
+
+                table.insert(connections, endConn)
+            end
+        end)
+
+        local c2 = gui.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragInput = input
+            end
+        end)
+
+        local c3 = UserInputService.InputChanged:Connect(function(input)
+            if input == dragInput and dragging then
+                update(input)
+            end
+        end)
+
+        table.insert(connections, c1)
+        table.insert(connections, c2)
+        table.insert(connections, c3)
+
+        return function()
+            dragging = false
+
+            for _, conn in ipairs(connections) do
+                if conn then
+                    conn:Disconnect()
+                end
+            end
+        end
+    end
+
+    local function CreateCompactBtn(text, pos, size, bgCol, callback)
+        local btn = Instance.new("TextButton")
+        btn.Size = size
+        btn.Position = pos
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.BackgroundColor3 = bgCol
+        btn.Font = Enum.Font.SourceSansBold
+        btn.TextSize = 9
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 4)
+        corner.Parent = btn
+
+        btn.Parent = EditFrame
+        btn.MouseButton1Click:Connect(callback)
+
+        return btn
+    end
+
+    CreateCompactBtn(
+        "Size +",
+        UDim2.new(0.06, 0, 0, 40),
+        UDim2.new(0.42, 0, 0, 22),
+        Color3.fromRGB(30, 30, 30),
+        function()
+            if SelectedButton then
+                SelectedButton.Size = UDim2.new(
+                    SelectedButton.Size.X.Scale * 1.1,
+                    SelectedButton.Size.X.Offset * 1.1,
+                    SelectedButton.Size.Y.Scale * 1.1,
+                    SelectedButton.Size.Y.Offset * 1.1
+                )
+            end
+        end
+    )
+
+    CreateCompactBtn(
+        "Size -",
+        UDim2.new(0.52, 0, 0, 40),
+        UDim2.new(0.42, 0, 0, 22),
+        Color3.fromRGB(30, 30, 30),
+        function()
+            if SelectedButton then
+                SelectedButton.Size = UDim2.new(
+                    SelectedButton.Size.X.Scale * 0.9,
+                    SelectedButton.Size.X.Offset * 0.9,
+                    SelectedButton.Size.Y.Scale * 0.9,
+                    SelectedButton.Size.Y.Offset * 0.9
+                )
+            end
+        end
+    )
+
+    CreateCompactBtn(
+        "Alpha +",
+        UDim2.new(0.06, 0, 0, 68),
+        UDim2.new(0.42, 0, 0, 22),
+        Color3.fromRGB(30, 30, 30),
+        function()
+            if SelectedButton then
+                if SelectedButton:IsA("ImageButton") then
+                    SelectedButton.ImageTransparency =
+                        math.clamp(SelectedButton.ImageTransparency + 0.1, 0, 1)
+                elseif SelectedButton:IsA("TextButton") then
+                    SelectedButton.BackgroundTransparency =
+                        math.clamp(SelectedButton.BackgroundTransparency + 0.1, 0, 1)
+                end
+            end
+        end
+    )
+
+    CreateCompactBtn(
+        "Alpha -",
+        UDim2.new(0.52, 0, 0, 68),
+        UDim2.new(0.42, 0, 0, 22),
+        Color3.fromRGB(30, 30, 30),
+        function()
+            if SelectedButton then
+                if SelectedButton:IsA("ImageButton") then
+                    SelectedButton.ImageTransparency =
+                        math.clamp(SelectedButton.ImageTransparency - 0.1, 0, 1)
+                elseif SelectedButton:IsA("TextButton") then
+                    SelectedButton.BackgroundTransparency =
+                        math.clamp(SelectedButton.BackgroundTransparency - 0.1, 0, 1)
+                end
+            end
+        end
+    )
+
+    CreateCompactBtn(
+        "SAVE LAYOUT",
+        UDim2.new(0.06, 0, 0, 98),
+        UDim2.new(0.88, 0, 0, 24),
+        Color3.fromRGB(40, 80, 40),
+        function()
+            SavedHUDLayout = {}
+
+            for _, gui in ipairs(PlayerGui:GetChildren()) do
+                if gui:IsA("ScreenGui")
+                    and gui.Name ~= "CompactHUDEditor"
+                    and gui.Name ~= "SynaxHub" then
+
+                    for _, element in ipairs(gui:GetDescendants()) do
+                        if element:IsA("ImageButton") or element:IsA("TextButton") then
+                            SavedHUDLayout[element] = {
+                                Position = element.Position,
+                                Size = element.Size,
+                                Transparency =
+                                    element:IsA("ImageButton")
+                                    and element.ImageTransparency
+                                    or element.BackgroundTransparency
+                            }
+                        end
+                    end
+                end
+            end
+
+            TitleLabel.Text = "HUD SAVED"
+            task.delay(1.2, function()
+                if TitleLabel and TitleLabel.Parent then
+                    TitleLabel.Text = "HUD EDITOR"
+                end
+            end)
+        end
+    )
+
+    CreateCompactBtn(
+        "LOAD LAYOUT",
+        UDim2.new(0.06, 0, 0, 128),
+        UDim2.new(0.88, 0, 0, 24),
+        Color3.fromRGB(40, 40, 80),
+        function()
+            for element, data in pairs(SavedHUDLayout) do
+                if element and element.Parent then
+                    element.Position = data.Position
+                    element.Size = data.Size
+
+                    if element:IsA("ImageButton") then
+                        element.ImageTransparency = data.Transparency
+                    elseif element:IsA("TextButton") then
+                        element.BackgroundTransparency = data.Transparency
+                    end
+                end
+            end
+
+            TitleLabel.Text = "HUD LOADED"
+            task.delay(1.2, function()
+                if TitleLabel and TitleLabel.Parent then
+                    TitleLabel.Text = "HUD EDITOR"
+                end
+            end)
+        end
+    )
+
+    CreateToggle(ExtraPage, "Enable Mobile HUD Editor Overlay", false, function(value)
+        HUDEditorActive = value == true
+        EditScreenGui.Enabled = HUDEditorActive
+
+        for _, conn in ipairs(HUDConnections) do
+            if conn then conn:Disconnect() end
+        end
+        HUDConnections = {}
+
+        for _, cleanupFunc in ipairs(HUDDragCleanup) do
+            if cleanupFunc then cleanupFunc() end
+        end
+        HUDDragCleanup = {}
+
+        SelectedButton = nil
+        SelectedLabel.Text = "Selected: None"
+
+        if HUDEditorActive then
+            for _, gui in ipairs(PlayerGui:GetChildren()) do
+                if gui:IsA("ScreenGui")
+                    and gui.Name ~= "CompactHUDEditor"
+                    and gui.Name ~= "SynaxHub" then
+
+                    for _, element in ipairs(gui:GetDescendants()) do
+                        if element:IsA("ImageButton") or element:IsA("TextButton") then
+                            local dragCleanup = MakeHUDElementDraggable(element)
+                            table.insert(HUDDragCleanup, dragCleanup)
+
+                            local conn = element.MouseButton1Click:Connect(function()
+                                SelectedButton = element
+                                SelectedLabel.Text =
+                                    "Selected: " .. string.sub(element.Name, 1, 14)
+                            end)
+
+                            table.insert(HUDConnections, conn)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    local HUDInfo = Instance.new("TextLabel", ExtraPage)
+    HUDInfo.Size = UDim2.new(1, -10, 0, 50)
+    HUDInfo.BackgroundTransparency = 1
+    HUDInfo.Text = "Mobile HUD Editor: tap a game button to select it, then drag " ..
+        "it, resize it, change transparency, and save/load the current layout."
+    HUDInfo.TextColor3 = Config.TextSecondary
+    HUDInfo.Font = Enum.Font.Gotham
+    HUDInfo.TextSize = 10
+    HUDInfo.TextWrapped = true
+    HUDInfo.TextXAlignment = Enum.TextXAlignment.Left
+
+    -----------------------------------------------------------------------
+    -- [ COMBAT TAB ]
+    -----------------------------------------------------------------------
+    CreateToggle(CombatPage, "PC Aimbot", false, function(state)
+        AimbotState.Enabled = state
+        if not state then
+            AimbotState.Target = nil
+        end
+    end)
+
+    CreateToggle(CombatPage, "Mobile Aimbot", false, function(state)
+        AimbotState.MobileEnabled = state
+        if not state and not AimbotState.Enabled then
+            AimbotState.Target = nil
+        end
+    end)
+
+    CreateToggle(CombatPage, "Hold RMB to Aim", false, function(state)
+        AimbotState.HoldMouse2 = state
+    end)
+
+    CreateToggle(CombatPage, "Legit Wallcheck", false, function(state)
+        AimbotState.WallCheck = state
+    end)
+
+    CreateToggle(CombatPage, "Team Check", false, function(state)
+        AimbotState.TeamCheck = state
+    end)
+
+    CreateToggle(CombatPage, "Sticky Target", false, function(state)
+        AimbotState.Sticky = state
+    end)
+
+    CreateToggle(CombatPage, "FOV", false, function(state)
+        AimbotState.FOVEnabled = state
+    end)
+
+    CreateFarmSlider(CombatPage, "FOV Size", 40, 500, 180, 1, "", function(value)
+        AimbotState.FOV = value
+    end)
+
+    CreateFarmSlider(CombatPage, "Smoothness", 1, 100, 18, 1, "%", function(value)
+        AimbotState.Smoothness = math.clamp(value / 100, 0.01, 1)
+    end)
+
+    CreateFarmSlider(CombatPage, "Prediction", 0, 30, 8, 1, "%", function(value)
+        AimbotState.Prediction = value / 100
+    end)
+
+    local TargetPartLabel = Instance.new("TextLabel", CombatPage)
+    TargetPartLabel.Size = UDim2.new(1, -10, 0, 34)
+    TargetPartLabel.BackgroundTransparency = 1
+    TargetPartLabel.Text = "PC: RMB / Mobile: automatic lock\nTarget: Head • FOV + Wallcheck + Prediction"
+    TargetPartLabel.TextColor3 = Config.TextSecondary
+    TargetPartLabel.Font = Enum.Font.Gotham
+    TargetPartLabel.TextSize = 10
+    TargetPartLabel.TextWrapped = true
+    TargetPartLabel.TextXAlignment = Enum.TextXAlignment.Left
+    -----------------------------------------------------------------------
+    -- [ INFORMATION TAB ]
+    -----------------------------------------------------------------------
+    local YTBtn = Instance.new("TextButton", InfoPage)
+    YTBtn.Size = UDim2.new(1, -10, 0, 32)
+    YTBtn.BackgroundColor3 = Config.ContainerColor
+    YTBtn.BackgroundTransparency = 0.2
+    YTBtn.Text = Config.YouTubeName
+    YTBtn.TextColor3 = Config.TextPrimary
+    YTBtn.Font = Enum.Font.GothamBold
+    YTBtn.TextSize = 11
+    Instance.new("UICorner", YTBtn).CornerRadius = UDim.new(0, 6)
+
+    YTBtn.MouseButton1Click:Connect(function()
+        if setclipboard then setclipboard(Config.YouTube) end
+        YTBtn.Text = "COPIED!"
+        task.wait(1.5)
+        YTBtn.Text = Config.YouTubeName
+    end)
+
+    local DCBtn = Instance.new("TextButton", InfoPage)
+    DCBtn.Size = UDim2.new(1, -10, 0, 32)
+    DCBtn.BackgroundColor3 = Config.ContainerColor
+    DCBtn.BackgroundTransparency = 0.2
+    DCBtn.Text = "Discord Server"
+    DCBtn.TextColor3 = Config.TextPrimary
+    DCBtn.Font = Enum.Font.GothamBold
+    DCBtn.TextSize = 11
+    Instance.new("UICorner", DCBtn).CornerRadius = UDim.new(0, 6)
+
+    DCBtn.MouseButton1Click:Connect(function()
+        if setclipboard then setclipboard(Config.Discord) end
+        DCBtn.Text = "LINK COPIED!"
+        task.wait(1.5)
+        DCBtn.Text = "Discord Server"
+    end)
+
+    local UpdateInfoTitle = Instance.new("TextLabel", InfoPage)
+    UpdateInfoTitle.Size = UDim2.new(1, -10, 0, 18)
+    UpdateInfoTitle.BackgroundTransparency = 1
+    UpdateInfoTitle.Text = "Synax Hub Update (beta - 0.0.6)"
+    UpdateInfoTitle.TextColor3 = Config.HighlightText
+    UpdateInfoTitle.Font = Enum.Font.GothamBold
+    UpdateInfoTitle.TextSize = 12
+    UpdateInfoTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local UpdateInfoDesc = Instance.new("TextLabel", InfoPage)
+    UpdateInfoDesc.Size = UDim2.new(1, -10, 0, 50)
+    UpdateInfoDesc.BackgroundTransparency = 1
+    UpdateInfoDesc.Text = "First of all, the script is still in beta; please keep this in mind. The main reason for this is to provide you with a better experience. This script brings many innovations to you, so stay patient through the challenge."
+    UpdateInfoDesc.TextColor3 = Config.TextSecondary
+    UpdateInfoDesc.Font = Enum.Font.Gotham
+    UpdateInfoDesc.TextSize = 10
+    UpdateInfoDesc.TextWrapped = true
+    UpdateInfoDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+    local WarningTitle = Instance.new("TextLabel", InfoPage)
+    WarningTitle.Size = UDim2.new(1, -10, 0, 18)
+    WarningTitle.BackgroundTransparency = 1
+    WarningTitle.Text = "Important Notice"
+    WarningTitle.TextColor3 = Config.WarningYellow
+    WarningTitle.Font = Enum.Font.GothamBold
+    WarningTitle.TextSize = 12
+    WarningTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local WarningDesc = Instance.new("TextLabel", InfoPage)
+    WarningDesc.Size = UDim2.new(1, -10, 0, 40)
+    WarningDesc.BackgroundTransparency = 1
+    WarningDesc.Text = "Please choose empty servers when farming. Doing it in crowded servers may put your account at risk."
+    WarningDesc.TextColor3 = Config.TextSecondary
+    WarningDesc.Font = Enum.Font.Gotham
+    WarningDesc.TextSize = 10
+    WarningDesc.TextWrapped = true
+    WarningDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+    local InfoTitle = Instance.new("TextLabel", InfoPage)
+    InfoTitle.Size = UDim2.new(1, -10, 0, 18)
+    InfoTitle.BackgroundTransparency = 1
+    InfoTitle.Text = "Project Information"
+    InfoTitle.TextColor3 = Config.HighlightText
+    InfoTitle.Font = Enum.Font.GothamBold
+    InfoTitle.TextSize = 12
+    InfoTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local InfoDesc = Instance.new("TextLabel", InfoPage)
+    InfoDesc.Size = UDim2.new(1, -10, 0, 30)
+    InfoDesc.BackgroundTransparency = 1
+    InfoDesc.Text = "This script was made for PrisonRP on Roblox. Running it in another game may cause issues."
+    InfoDesc.TextColor3 = Config.TextSecondary
+    InfoDesc.Font = Enum.Font.Gotham
+    InfoDesc.TextSize = 10
+    InfoDesc.TextWrapped = true
+    InfoDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+    local DevTitle = Instance.new("TextLabel", InfoPage)
+    DevTitle.Size = UDim2.new(1, -10, 0, 18)
+    DevTitle.BackgroundTransparency = 1
+    DevTitle.Text = "Development team"
+    DevTitle.TextColor3 = Config.CloseRed
+    DevTitle.Font = Enum.Font.GothamBold
+    DevTitle.TextSize = 12
+    DevTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local DevOwner = Instance.new("TextLabel", InfoPage)
+    DevOwner.Size = UDim2.new(1, -10, 0, 15)
+    DevOwner.BackgroundTransparency = 1
+    DevOwner.Text = "• Owner/Developer: C11\n• PrisonRP Responsible: Hawk\n• PrisonRP Senior Official: Eagle\n• Version: beta - 0.0.6"
+    DevOwner.TextColor3 = Config.TextPrimary
+    DevOwner.Font = Enum.Font.Gotham
+    DevOwner.TextSize = 10
+    DevOwner.TextXAlignment = Enum.TextXAlignment.Left
+
+    -----------------------------------------------------------------------
+    -- [ SETTINGS TAB ]
+    -----------------------------------------------------------------------
+    local SettingsTitle = Instance.new("TextLabel", SettingsPage)
+    SettingsTitle.Size = UDim2.new(1, -10, 0, 20)
+    SettingsTitle.BackgroundTransparency = 1
+    SettingsTitle.Text = "Exploit & Utility Settings"
+    SettingsTitle.TextColor3 = Config.HighlightText
+    SettingsTitle.Font = Enum.Font.GothamBold
+    SettingsTitle.TextSize = 12
+    SettingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local C11AccessTitle = Instance.new("TextLabel", SettingsPage)
+    C11AccessTitle.Size = UDim2.new(1, -10, 0, 20)
+    C11AccessTitle.BackgroundTransparency = 1
+    C11AccessTitle.Text = "C11 SYNAX ACCESS"
+    C11AccessTitle.TextColor3 = Config.HighlightText
+    C11AccessTitle.Font = Enum.Font.GothamBold
+    C11AccessTitle.TextSize = 12
+    C11AccessTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local C11AccessStatus = CreateCard(
+        SettingsPage,
+        "Blacklist / Access",
+        C11AccessState.Allowed and "AUTHORIZED" or "DENIED"
+    )
+
+    local C11ApiStatus = CreateCard(
+        SettingsPage,
+        "Access API",
+        C11AccessState.APIOnline and "ONLINE" or "OFFLINE"
+    )
+
+    local C11UserStatus = CreateCard(
+        SettingsPage,
+        "User ID",
+        tostring(LocalPlayer.UserId)
+    )
+
+    local C11AccessReason = CreateCard(
+        SettingsPage,
+        "Restriction",
+        C11AccessState.Reason or "None"
+    )
+
+    local WebhookStatus = CreateCard(SettingsPage, "Webhook Logger", WEBHOOK_ENABLED and "Enabled" or "Disabled")
+    local WebhookInfo = Instance.new("TextLabel", SettingsPage)
+    WebhookInfo.Size = UDim2.new(1, -10, 0, 38)
+    WebhookInfo.BackgroundColor3 = Config.ContainerColor
+    WebhookInfo.BackgroundTransparency = 0.2
+    WebhookInfo.TextColor3 = Config.TextSecondary
+    WebhookInfo.Font = Enum.Font.Gotham
+    WebhookInfo.TextSize = 9
+    WebhookInfo.TextWrapped = true
+    WebhookInfo.TextXAlignment = Enum.TextXAlignment.Left
+    WebhookInfo.TextYAlignment = Enum.TextYAlignment.Center
+    WebhookInfo.Text = "Execution logs include username, User ID, game, Place ID, server Job ID and time. The webhook URL is kept hidden from the UI."
+    Instance.new("UICorner", WebhookInfo).CornerRadius = UDim.new(0, 6)
+
+    CreateButton(SettingsPage, "RE-CHECK C11 ACCESS", function()
+        local allowed, reason, expiresAt, apiOnline = checkC11Access()
+
+        C11AccessState.Allowed = allowed == true
+        C11AccessState.Reason = reason
+        C11AccessState.ExpiresAt = expiresAt
+        C11AccessState.CheckedAt = os.time()
+        C11AccessState.APIOnline = apiOnline == true
+
+        C11AccessStatus.Text = C11AccessState.Allowed and "AUTHORIZED" or "DENIED"
+        C11ApiStatus.Text = C11AccessState.APIOnline and "ONLINE" or "OFFLINE"
+        C11AccessReason.Text = C11AccessState.Reason or "None"
+
+        if C11AccessState.ExpiresAt then
+            C11AccessReason.Text = tostring(C11AccessState.Reason or "Restricted") ..
+                " • " .. tostring(C11AccessState.ExpiresAt)
+        end
+    end)
+
+    local C11AccessInfo = Instance.new("TextLabel", SettingsPage)
+    C11AccessInfo.Size = UDim2.new(1, -10, 0, 42)
+    C11AccessInfo.BackgroundTransparency = 1
+    C11AccessInfo.Text = "Blacklist actions are managed from the C11 Discord panel. " ..
+        "This client only verifies the server-side access decision."
+    C11AccessInfo.TextColor3 = Config.TextSecondary
+    C11AccessInfo.Font = Enum.Font.Gotham
+    C11AccessInfo.TextSize = 10
+    C11AccessInfo.TextWrapped = true
+    C11AccessInfo.TextXAlignment = Enum.TextXAlignment.Left
+
+    -----------------------------------------------------------------------
+    -- [ GLOBAL LANGUAGE • 10 LANGUAGES ]
+    -----------------------------------------------------------------------
+    local LanguageTitle = Instance.new("TextLabel", SettingsPage)
+    LanguageTitle.Size = UDim2.new(1, -10, 0, 20)
+    LanguageTitle.BackgroundTransparency = 1
+    LanguageTitle.Text = "GLOBAL LANGUAGE • " .. Translate("Beta")
+    LanguageTitle.TextColor3 = Config.HighlightText
+    LanguageTitle.Font = Enum.Font.GothamBold
+    LanguageTitle.TextSize = 12
+    LanguageTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local LanguageCard = CreateCard(SettingsPage, "Current Language", LanguageState.Current)
+
+    local LanguageInfo = Instance.new("TextLabel", SettingsPage)
+    LanguageInfo.Size = UDim2.new(1, -10, 0, 32)
+    LanguageInfo.BackgroundTransparency = 1
+    LanguageInfo.Text = "10 languages available. Select one from the dropdown below."
+    LanguageInfo.TextColor3 = Config.TextSecondary
+    LanguageInfo.Font = Enum.Font.Gotham
+    LanguageInfo.TextSize = 9
+    LanguageInfo.TextWrapped = true
+    LanguageInfo.TextXAlignment = Enum.TextXAlignment.Left
+
+    local LanguageSelector = Instance.new("TextButton", SettingsPage)
+    LanguageSelector.Size = UDim2.new(1, -10, 0, 36)
+    LanguageSelector.BackgroundColor3 = Config.ContainerColor
+    LanguageSelector.BackgroundTransparency = 0.2
+    LanguageSelector.TextColor3 = Config.TextPrimary
+    LanguageSelector.Font = Enum.Font.GothamBold
+    LanguageSelector.TextSize = 11
+    LanguageSelector.TextXAlignment = Enum.TextXAlignment.Left
+    LanguageSelector.AutoButtonColor = false
+    Instance.new("UICorner", LanguageSelector).CornerRadius = UDim.new(0, 6)
+
+    local Arrow = Instance.new("TextLabel", LanguageSelector)
+    Arrow.Size = UDim2.new(0, 30, 1, 0)
+    Arrow.Position = UDim2.new(1, -35, 0, 0)
+    Arrow.BackgroundTransparency = 1
+    Arrow.Text = "▼"
+    Arrow.TextColor3 = Config.TextSecondary
+    Arrow.Font = Enum.Font.GothamBold
+    Arrow.TextSize = 12
+
+    local LanguageDropdown = Instance.new("Frame", SettingsPage)
+    LanguageDropdown.Size = UDim2.new(1, -10, 0, 0)
+    LanguageDropdown.BackgroundColor3 = Config.ContainerColor
+    LanguageDropdown.BackgroundTransparency = 0.08
+    LanguageDropdown.Visible = false
+    LanguageDropdown.ClipsDescendants = true
+    LanguageDropdown.LayoutOrder = 999
+    Instance.new("UICorner", LanguageDropdown).CornerRadius = UDim.new(0, 6)
+
+    local LanguageScroll = Instance.new("ScrollingFrame", LanguageDropdown)
+    LanguageScroll.Size = UDim2.new(1, 0, 1, 0)
+    LanguageScroll.BackgroundTransparency = 1
+    LanguageScroll.BorderSizePixel = 0
+    LanguageScroll.ScrollBarThickness = 3
+    LanguageScroll.ScrollBarImageColor3 = Config.TextSecondary
+    LanguageScroll.CanvasSize = UDim2.new(0, 0, 0, #SupportedLanguages * 34)
+    LanguageScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+    local LanguageList = Instance.new("UIListLayout", LanguageScroll)
+    LanguageList.SortOrder = Enum.SortOrder.LayoutOrder
+    LanguageList.Padding = UDim.new(0, 3)
+    LanguageList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+    local LanguageButtons = {}
+    local DropdownOpen = false
+    local function UpdateLanguageSelector()
+        local current = SupportedLanguages[1]
+        for _, item in ipairs(SupportedLanguages) do
+            if item.Name == LanguageState.Current then current = item break end
+        end
+        LanguageSelector.Text = "  " .. current.Flag .. "  " .. current.Name
+        Arrow.Text = DropdownOpen and "▲" or "▼"
+        LanguageCard.Text = current.Name
+    end
+
+    local function ApplyLanguage()
+        -- First, remember every static text element so feature names and manually-created UI labels are included.
+        for _, obj in ipairs(MainGui:GetDescendants()) do
+            if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and not obj:GetAttribute("SynaxOriginalText") then
+                local text = obj.Text
+                if text and text ~= "" and not string.find(text, "^Session: ") and not string.find(text, "^Job ID:") then
+                    obj:SetAttribute("SynaxOriginalText", text)
+                end
+            end
+        end
+
+        for _, obj in ipairs(MainGui:GetDescendants()) do
+            if obj:GetAttribute("SynaxToggleIndicator") then
+                obj.Text = Translate(obj:GetAttribute("SynaxToggleState") and "ON" or "OFF")
+            elseif obj:GetAttribute("SynaxSliderTitle") then
+                local sliderTitle = obj:GetAttribute("SynaxSliderTitle")
+                local sliderValue = obj:GetAttribute("SynaxSliderValue")
+                local sliderSuffix = obj:GetAttribute("SynaxSliderSuffix") or ""
+                obj.Text = Translate(sliderTitle) .. ": " .. tostring(sliderValue) .. sliderSuffix
+            elseif obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                local original = obj:GetAttribute("SynaxOriginalText")
+                if original then
+                    if obj == LanguageSelector then
+                        -- handled separately
+                    elseif obj:IsA("TextButton") and string.sub(original, 1, 2) == "  " then
+                        obj.Text = "  " .. Translate(string.sub(original, 3))
+                    else
+                        obj.Text = Translate(original)
+                    end
+                end
+            end
+        end
+
+        SettingsTitle.Text = Translate("Settings") .. " • " .. Translate("Beta")
+        LanguageTitle.Text = "GLOBAL LANGUAGE • " .. Translate("Beta")
+        UpdateLanguageSelector()
+    end
+
+    local function SetLanguage(index)
+        LanguageState.Current = SupportedLanguages[index].Name
+        ApplyLanguage()
+        DropdownOpen = false
+        LanguageDropdown.Visible = false
+        LanguageDropdown.Size = UDim2.new(1, -10, 0, 0)
+        UpdateLanguageSelector()
+    end
+
+    for i, item in ipairs(SupportedLanguages) do
+        local btn = Instance.new("TextButton", LanguageScroll)
+        btn.Size = UDim2.new(1, -8, 0, 31)
+        btn.BackgroundColor3 = Config.ContainerColor
+        btn.BackgroundTransparency = 0.15
+        btn.Text = "  " .. item.Flag .. "  " .. item.Name
+        btn.TextColor3 = Config.TextPrimary
+        btn.Font = Enum.Font.GothamMedium
+        btn.TextSize = 10
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.LayoutOrder = i
+        btn.AutoButtonColor = false
+        btn:SetAttribute("SynaxLanguageButton", true)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+        LanguageButtons[i] = btn
+        btn.MouseButton1Click:Connect(function() SetLanguage(i) end)
+    end
+
+    LanguageSelector.MouseButton1Click:Connect(function()
+        DropdownOpen = not DropdownOpen
+        LanguageDropdown.Visible = DropdownOpen
+        LanguageDropdown.Size = UDim2.new(1, -10, 0, DropdownOpen and 174 or 0)
+        Arrow.Text = DropdownOpen and "▲" or "▼"
+    end)
+
+    ApplyLanguage()
+
+    local LiveSystemTitle = Instance.new("TextLabel", SettingsPage)
+    LiveSystemTitle.Size = UDim2.new(1, -10, 0, 20)
+    LiveSystemTitle.BackgroundTransparency = 1
+    LiveSystemTitle.Text = "LIVE SERVICES"
+    LiveSystemTitle.TextColor3 = Config.HighlightText
+    LiveSystemTitle.Font = Enum.Font.GothamBold
+    LiveSystemTitle.TextSize = 12
+    LiveSystemTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local LiveBanStatus = CreateCard(SettingsPage, "Live Ban / Access", "MONITORING")
+    local LiveAnnouncementStatus = CreateCard(SettingsPage, "Live Announcements", "MONITORING")
+
+    local AntiAfkConn = nil
+
+    CreateToggle(SettingsPage, "Anti AFK (Prevent Kick)", false, function(state)
+        if state then
+            if not AntiAfkConn then
+                AntiAfkConn = LocalPlayer.Idled:Connect(function()
+                    pcall(function()
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                        task.wait(0.1)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+                    end)
+                end)
+            end
+        else
+            if AntiAfkConn then
+                AntiAfkConn:Disconnect()
+                AntiAfkConn = nil
+            end
+        end
+    end)
+
+    CreateToggle(SettingsPage, "Noclip (Walk Through Walls)", false, function(state)
+        HubSettings.Noclip = state
+        if UtilityState.NoclipConnection then
+            UtilityState.NoclipConnection:Disconnect()
+            UtilityState.NoclipConnection = nil
+        end
+        if state then
+            UtilityState.NoclipConnection = RunService.Stepped:Connect(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end)
+        end
+    end)
+
+    CreateToggle(SettingsPage, "Infinite Jump", false, function(state)
+        HubSettings.InfiniteJump = state
+    end)
+
+    CreateToggle(SettingsPage, "FullBright (Remove Darkness)", false, function(state)
+        HubSettings.FullBright = state
+        local Lighting = game:GetService("Lighting")
+        if state then
+            if not UtilityState.SavedLighting then
+                UtilityState.SavedLighting = {
+                    Brightness = Lighting.Brightness,
+                    ClockTime = Lighting.ClockTime,
+                    GlobalShadows = Lighting.GlobalShadows,
+                    FogEnd = Lighting.FogEnd,
+                    ExposureCompensation = Lighting.ExposureCompensation
+                }
+            end
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 100000
+            Lighting.ExposureCompensation = 0.5
+            UtilityState.FullBrightActive = true
+        elseif UtilityState.SavedLighting then
+            local saved = UtilityState.SavedLighting
+            Lighting.Brightness = saved.Brightness
+            Lighting.ClockTime = saved.ClockTime
+            Lighting.GlobalShadows = saved.GlobalShadows
+            Lighting.FogEnd = saved.FogEnd
+            Lighting.ExposureCompensation = saved.ExposureCompensation
+            UtilityState.SavedLighting = nil
+            UtilityState.FullBrightActive = false
+        end
+    end)
+
+    local ScaleContainer = Instance.new("Frame", SettingsPage)
+    ScaleContainer.Size = UDim2.new(1, -10, 0, 36)
+    ScaleContainer.BackgroundColor3 = Config.ContainerColor
+    ScaleContainer.BackgroundTransparency = 0.2
+    Instance.new("UICorner", ScaleContainer).CornerRadius = UDim.new(0, 6)
+
+    local ScaleLbl = Instance.new("TextLabel", ScaleContainer)
+    ScaleLbl.Size = UDim2.new(0.5, 0, 1, 0)
+    ScaleLbl.Position = UDim2.new(0, 10, 0, 0)
+    ScaleLbl.BackgroundTransparency = 1
+    ScaleLbl.Text = "UI Scale Size"
+    ScaleLbl.TextColor3 = Config.TextPrimary
+    ScaleLbl.Font = Enum.Font.GothamMedium
+    ScaleLbl.TextSize = 11
+    ScaleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local scales = {
+        {Name = "Small", Size = UDim2.new(0, 420, 0, 280)},
+        {Name = "Normal", Size = UDim2.new(0, 520, 0, 340)},
+        {Name = "Large", Size = UDim2.new(0, 620, 0, 400)}
+    }
+
+    local sxOffset = -105
+    for _, sc in ipairs(scales) do
+        local sBtn = Instance.new("TextButton", ScaleContainer)
+        sBtn.Size = UDim2.new(0, 32, 0, 20)
+        sBtn.Position = UDim2.new(1, sxOffset, 0.5, -10)
+        sBtn.BackgroundColor3 = Config.SidebarColor
+        sBtn.Text = sc.Name:sub(1,1)
+        sBtn.TextColor3 = Config.Accent
+        sBtn.Font = Enum.Font.GothamBold
+        sBtn.TextSize = 9
+        Instance.new("UICorner", sBtn).CornerRadius = UDim.new(0, 4)
+        sBtn.MouseButton1Click:Connect(function()
+            TweenService:Create(MainFrame, TweenInfo.new(0.3), {Size = sc.Size}):Play()
+        end)
+        sxOffset += 36
+    end
+    task.defer(function()
+        task.wait(0.5)
+        scanStaff()
+        updateStaffList()
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ GLOBAL ESP & UTILITY RENDER LOOP ]
+    -- Visuals are throttled; Noclip/FullBright are handled on state change.
+    -----------------------------------------------------------------------
+    local LastVisualUpdate = 0
+    local VisualInterval = 1 / 15
+
+    local function cleanupPlayerVisual(p)
+        local data = ActiveDrawings[p]
+        if data then
+            if data.Box then pcall(function() data.Box:Remove() end) end
+            if data.Health then pcall(function() data.Health:Remove() end) end
+            if data.Bones then
+                for _, line in ipairs(data.Bones) do pcall(function() line:Remove() end) end
+            end
+            ActiveDrawings[p] = nil
+        end
+        if p.Character then
+            for _, name in ipairs({"SynaxHubGlow", "SynaxHubHealthUI", "SynaxHubNameDistanceUI", "SynaxHubTargetLine"}) do
+                local obj = p.Character:FindFirstChild(name)
+                if obj then pcall(function() obj:Destroy() end) end
+            end
+        end
+    end
+
+    Players.PlayerRemoving:Connect(cleanupPlayerVisual)
+
+    task.spawn(function()
+        while MainGui.Parent do
+            task.wait(VisualInterval)
+            if not MainGui.Parent then break end
+
+            local visualsActive = HubSettings.GlowAllWhite
+                or HubSettings.BoxEsp
+                or HubSettings.HealthBar
+                or HubSettings.TargetLines
+                or HubSettings.SkeletonEsp
+                or HubSettings.NameDistanceEsp
+
+            if not visualsActive then
+                for p in pairs(ActiveDrawings) do cleanupPlayerVisual(p) end
+                continue
+            end
+
+            local camera = workspace.CurrentCamera
+            if not camera then continue end
+            LastVisualUpdate = os.clock()
+
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    local char = p.Character
+                    local root = char:FindFirstChild("HumanoidRootPart")
+                    local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+                    if root then
+                        local glow = char:FindFirstChild("SynaxHubGlow")
+                        if HubSettings.GlowAllWhite then
+                            if not glow then
+                                glow = Instance.new("Highlight")
+                                glow.Name = "SynaxHubGlow"
+                                glow.Parent = char
+                            end
+                            glow.FillColor = HubSettings.GlowColor
+                            glow.FillTransparency = 0.4
+                            glow.OutlineColor = Color3.fromRGB(255, 255, 255)
+                            glow.OutlineTransparency = 0
+                        elseif glow then
+                            glow:Destroy()
+                        end
+
+                        if HubSettings.BoxEsp or HubSettings.SkeletonEsp then
+                            if not ActiveDrawings[p] then
+                                local box, bones = nil, {}
+                                pcall(function()
+                                    box = Drawing.new("Square")
+                                    box.Visible = false
+                                    box.Thickness = 1.5
+                                    box.Color = Color3.fromRGB(255, 255, 255)
+                                    box.Filled = false
+                                    for _ = 1, 6 do
+                                        local line = Drawing.new("Line")
+                                        line.Visible = false
+                                        line.Thickness = 1.5
+                                        line.Color = Color3.fromRGB(255, 255, 255)
+                                        table.insert(bones, line)
+                                    end
+                                end)
+                                ActiveDrawings[p] = {Box = box, Bones = bones}
+                            end
+                        end
+
+                        local drawData = ActiveDrawings[p]
+                        if drawData then
+                            if HubSettings.BoxEsp and drawData.Box then
+                                local head = char:FindFirstChild("Head")
+                                if head then
+                                    local headPos, hVis = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                                    local rootPos, rVis = camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+                                    if hVis or rVis then
+                                        local height = math.abs(headPos.Y - rootPos.Y)
+                                        local width = math.max(height / 2, 2)
+                                        drawData.Box.Size = Vector2.new(width, height)
+                                        drawData.Box.Position = Vector2.new(headPos.X - width / 2, headPos.Y)
+                                        drawData.Box.Visible = true
+                                    else
+                                        drawData.Box.Visible = false
+                                    end
+                                else
+                                    drawData.Box.Visible = false
+                                end
+                            elseif drawData.Box then
+                                drawData.Box.Visible = false
+                            end
+
+                            if HubSettings.SkeletonEsp and humanoid and humanoid.Health > 0 then
+                                local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+                                local head = char:FindFirstChild("Head")
+                                if head and torso and #drawData.Bones > 0 then
+                                    local hPos, hVis = camera:WorldToViewportPoint(head.Position)
+                                    local tPos, tVis = camera:WorldToViewportPoint(torso.Position)
+                                    drawData.Bones[1].Visible = hVis or tVis
+                                    if drawData.Bones[1].Visible then
+                                        drawData.Bones[1].From = Vector2.new(hPos.X, hPos.Y)
+                                        drawData.Bones[1].To = Vector2.new(tPos.X, tPos.Y)
+                                    end
+                                else
+                                    for _, bone in ipairs(drawData.Bones) do bone.Visible = false end
+                                end
+                            else
+                                for _, bone in ipairs(drawData.Bones) do bone.Visible = false end
+                            end
+                        end
+
+                        local uiHolder = char:FindFirstChild("SynaxHubHealthUI")
+                        if HubSettings.HealthBar and humanoid then
+                            if not uiHolder then
+                                uiHolder = Instance.new("BillboardGui")
+                                uiHolder.Name = "SynaxHubHealthUI"
+                                uiHolder.Size = UDim2.new(0, 100, 0, 40)
+                                uiHolder.StudsOffset = Vector3.new(0, 3.2, 0)
+                                uiHolder.AlwaysOnTop = true
+                                uiHolder.Parent = char
+                                local bgBar = Instance.new("Frame", uiHolder)
+                                bgBar.Name = "HealthBg"
+                                bgBar.Size = UDim2.new(0, 60, 0, 6)
+                                bgBar.Position = UDim2.new(0.5, -30, 0, 0)
+                                bgBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+                                bgBar.BorderSizePixel = 0
+                                Instance.new("UICorner", bgBar).CornerRadius = UDim.new(1, 0)
+                                local fgBar = Instance.new("Frame", bgBar)
+                                fgBar.Name = "HealthFg"
+                                fgBar.Size = UDim2.new(1, 0, 1, 0)
+                                fgBar.BackgroundColor3 = Color3.fromRGB(60, 220, 80)
+                                fgBar.BorderSizePixel = 0
+                                Instance.new("UICorner", fgBar).CornerRadius = UDim.new(1, 0)
+                            end
+                            local hb = uiHolder:FindFirstChild("HealthBg")
+                            local fg = hb and hb:FindFirstChild("HealthFg")
+                            if fg and humanoid.MaxHealth > 0 then
+                                local healthRatio = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                                fg.Size = UDim2.new(healthRatio, 0, 1, 0)
+
+                                if healthRatio > 0.6 then
+                                    fg.BackgroundColor3 = Color3.fromRGB(60, 220, 80)
+                                elseif healthRatio > 0.3 then
+                                    fg.BackgroundColor3 = Color3.fromRGB(235, 190, 60)
+                                else
+                                    fg.BackgroundColor3 = Color3.fromRGB(235, 65, 65)
+                                end
+                            end
+                        elseif uiHolder then
+                            uiHolder:Destroy()
+                        end
+
+                        local nameDistanceUI = char:FindFirstChild("SynaxHubNameDistanceUI")
+                        if HubSettings.NameDistanceEsp then
+                            if not nameDistanceUI then
+                                nameDistanceUI = Instance.new("BillboardGui")
+                                nameDistanceUI.Name = "SynaxHubNameDistanceUI"
+                                nameDistanceUI.Size = UDim2.fromOffset(170, 38)
+                                nameDistanceUI.StudsOffset = Vector3.new(0, 2.7, 0)
+                                nameDistanceUI.AlwaysOnTop = true
+                                nameDistanceUI.MaxDistance = 5000
+                                nameDistanceUI.Parent = char
+
+                                local label = Instance.new("TextLabel")
+                                label.Name = "Info"
+                                label.Size = UDim2.fromScale(1, 1)
+                                label.BackgroundTransparency = 1
+                                label.TextColor3 = Config.TextPrimary
+                                label.TextStrokeTransparency = 0.25
+                                label.Font = Enum.Font.GothamBold
+                                label.TextSize = 10
+                                label.TextWrapped = true
+                                label.Parent = nameDistanceUI
+                            end
+
+                            local info = nameDistanceUI:FindFirstChild("Info")
+                            if info then
+                                local distance = math.floor((camera.CFrame.Position - root.Position).Magnitude)
+                                info.Text = p.DisplayName .. "\n" .. tostring(distance) .. "m"
+                            end
+                        elseif nameDistanceUI then
+                            nameDistanceUI:Destroy()
+                        end
+
+                        local linePart = char:FindFirstChild("SynaxHubTargetLine")
+                        if HubSettings.TargetLines then
+                            if not linePart then
+                                linePart = Instance.new("Part")
+                                linePart.Name = "SynaxHubTargetLine"
+                                linePart.Size = Vector3.new(0.1, 50, 0.1)
+                                linePart.Anchored = true
+                                linePart.CanCollide = false
+                                linePart.CanQuery = false
+                                linePart.CanTouch = false
+                                linePart.Transparency = 0.4
+                                linePart.BrickColor = BrickColor.new("Cyan")
+                                linePart.Parent = char
+                            end
+                            linePart.CFrame = CFrame.new(root.Position + Vector3.new(0, 25, 0))
+                        elseif linePart then
+                            linePart:Destroy()
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ PC + MOBILE AIMBOT ]
+    -----------------------------------------------------------------------
+    local function getAimbotCamera()
+        return workspace.CurrentCamera or Camera
+    end
+
+    local function isAimbotTargetValid(p)
+        if p == LocalPlayer or not p.Character then return false end
+        if AimbotState.TeamCheck and p.Team == LocalPlayer.Team then return false end
+
+        local char = p.Character
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not hum or hum.Health <= 0 or not root then return false end
+
+        local camera = getAimbotCamera()
+        local targetPart = char:FindFirstChild(AimbotState.TargetPart) or root
+        if (targetPart.Position - camera.CFrame.Position).Magnitude > AimbotState.MaxDistance then return false end
+
+        local screen, onScreen = camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen or screen.Z <= 0 then return false end
+
+        local center = camera.ViewportSize / 2
+        local distance2D = (Vector2.new(screen.X, screen.Y) - Vector2.new(center.X, center.Y)).Magnitude
+        if AimbotState.FOVEnabled and distance2D > AimbotState.FOV then return false end
+
+        if AimbotState.WallCheck then
+            local origin = camera.CFrame.Position
+            local direction = targetPart.Position - origin
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = {LocalPlayer.Character, char}
+            local hit = Workspace:Raycast(origin, direction, params)
+            if hit then return false end
+        end
+
+        return true, targetPart, distance2D
+    end
+
+    local function getBestAimbotTarget()
+        if AimbotState.Sticky and AimbotState.Target then
+            local ok = isAimbotTargetValid(AimbotState.Target)
+            if ok then return AimbotState.Target end
+        end
+
+        local best, bestDistance = nil, math.huge
+        for _, p in ipairs(Players:GetPlayers()) do
+            local ok, _, dist = isAimbotTargetValid(p)
+            if ok and dist < bestDistance then
+                best, bestDistance = p, dist
+            end
+        end
+        return best
+    end
+
+    AimbotState.Connection = RunService.RenderStepped:Connect(function()
+        if not AimbotState.Enabled and not AimbotState.MobileEnabled then return end
+
+        local usingMobile = AimbotState.MobileEnabled
+        if not usingMobile and AimbotState.HoldMouse2 then
+            if not UserInputService.MouseEnabled or not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+                AimbotState.Target = nil
+                return
+            end
+        end
+
+        local target = getBestAimbotTarget()
+        if not target then
+            AimbotState.Target = nil
+            return
+        end
+
+        AimbotState.Target = target
+        local char = target.Character
+        local part = char and (char:FindFirstChild(AimbotState.TargetPart) or char:FindFirstChild("HumanoidRootPart"))
+        local camera = getAimbotCamera()
+        if not part or not camera then return end
+
+        local velocity = part.AssemblyLinearVelocity or Vector3.zero
+        local predicted = part.Position + velocity * AimbotState.Prediction
+        local desired = CFrame.lookAt(camera.CFrame.Position, predicted)
+        local alpha = math.clamp(AimbotState.Smoothness, 0.01, 1)
+        camera.CFrame = camera.CFrame:Lerp(desired, alpha)
+    end)
+
+    UserInputService.JumpRequest:Connect(function()
+        if HubSettings.InfiniteJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+            LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
+
+    -----------------------------------------------------------------------
+    -- [ UI LAYOUT FIX ]
+    -- Keep every page deterministic on mobile/PC. The old layout relied on
+    -- several siblings sharing LayoutOrder = 0, which can reorder controls
+    -- unexpectedly and create the large blank/incorrect gaps seen on mobile.
+    -- This section only normalizes the visual page layout; feature logic,
+    -- access checks, staff system and API configuration are untouched.
+    -----------------------------------------------------------------------
+    local AllPages = {
+        DashboardPage,
+        InfoPage,
+        FarmPage,
+        AutoEatPage,
+        CombatPage,
+        EspPage,
+        StaffPage,
+        ExtraPage,
+        SettingsPage,
+    }
+
+    PagesContainer.ClipsDescendants = true
+
+    local function NormalizePageLayout(Page)
+        if not Page or not Page.Parent then return end
+
+        Page.Size = UDim2.new(1, 0, 1, 0)
+        Page.Position = UDim2.new(0, 0, 0, 0)
+        Page.ClipsDescendants = true
+        Page.ScrollingDirection = Enum.ScrollingDirection.Y
+        Page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        Page.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+        local Layout = Page:FindFirstChildOfClass("UIListLayout")
+        if not Layout then
+            Layout = Instance.new("UIListLayout")
+            Layout.Parent = Page
+        end
+
+        Layout.SortOrder = Enum.SortOrder.LayoutOrder
+        Layout.FillDirection = Enum.FillDirection.Vertical
+        Layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        Layout.VerticalAlignment = Enum.VerticalAlignment.Top
+        Layout.Padding = UDim.new(0, 6)
+
+        -- Assign a unique order using the existing creation order.
+        -- This preserves the intended UI sequence without changing any
+        -- individual feature control.
+        local order = 0
+        for _, child in ipairs(Page:GetChildren()) do
+            if not child:IsA("UIListLayout")
+                and not child:IsA("UIPadding")
+                and not child:IsA("UIGridLayout")
+                and not child:IsA("UITableLayout")
+                and not child:IsA("UIPageLayout") then
+                order += 1
+                child.LayoutOrder = order
+            end
+        end
+
+        local function updateCanvas()
+            if Page.Parent and Layout.Parent == Page then
+                Page.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 12)
+            end
+        end
+
+        Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+        task.defer(updateCanvas)
+    end
+
+    for _, Page in ipairs(AllPages) do
+        NormalizePageLayout(Page)
+    end
+
+    MakeDraggable(MainFrame)
+    MakeDraggable(TopPill)
+end
+
+ExecuteScript()
